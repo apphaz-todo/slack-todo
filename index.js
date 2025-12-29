@@ -1,20 +1,25 @@
 import pkg from '@slack/bolt'
 import dotenv from 'dotenv'
+import express from 'express'
 import { handleHome } from './home.js'
 import { supabase } from './supabase.js'
 
-const { App } = pkg
-
 dotenv.config()
 
+const { App, ExpressReceiver } = pkg
 
-const app = new App({
-  token: process.env.SLACK_BOT_TOKEN,
+// 👇 Explicit receiver (IMPORTANT)
+const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET
 })
 
-app.event('app_home_opened', handleHome)
+// 👇 Bolt App
+const app = new App({
+  token: process.env.SLACK_BOT_TOKEN,
+  receiver
+})
 
+// 👇 Slash command
 app.command('/todo', async ({ command, ack, say }) => {
   await ack()
 
@@ -30,6 +35,7 @@ app.command('/todo', async ({ command, ack, say }) => {
     })
 
     await say(`✅ Task added: *${title}*`)
+    return
   }
 
   if (text === 'list') {
@@ -39,7 +45,7 @@ app.command('/todo', async ({ command, ack, say }) => {
       .eq('assigned_to', command.user_id)
       .eq('status', 'open')
 
-    if (!data.length) {
+    if (!data || data.length === 0) {
       await say('🎉 No open tasks')
       return
     }
@@ -49,7 +55,14 @@ app.command('/todo', async ({ command, ack, say }) => {
   }
 })
 
-(async () => {
-  await app.start(process.env.PORT || 3000)
-  console.log('⚡ Slack Todo running')
-})()
+// 👇 App Home
+app.event('app_home_opened', handleHome)
+
+// 👇 Start Express manually (Render-friendly)
+const server = express()
+server.use('/slack/events', receiver.router)
+
+const PORT = process.env.PORT || 3000
+server.listen(PORT, () => {
+  console.log(`⚡ Slack Todo running on port ${PORT}`)
+})
