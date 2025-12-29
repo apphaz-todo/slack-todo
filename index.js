@@ -8,57 +8,120 @@ dotenv.config()
 
 const { App, ExpressReceiver } = pkg
 
-// 👇 Explicit receiver (IMPORTANT)
+// ─────────────────────────────────────────────
+// DEBUG: Startup env check
+// ─────────────────────────────────────────────
+console.log('🚀 Starting Slack Todo App')
+console.log('ENV CHECK:', {
+  hasBotToken: !!process.env.SLACK_BOT_TOKEN,
+  hasSigningSecret: !!process.env.SLACK_SIGNING_SECRET,
+  hasSupabaseUrl: !!process.env.SUPABASE_URL
+})
+
+// ─────────────────────────────────────────────
+// Express Receiver (Slack Webhook Entry Point)
+// ─────────────────────────────────────────────
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET
 })
 
-// 👇 Bolt App
+// Debug ALL incoming Slack HTTP requests
+receiver.router.use((req, res, next) => {
+  console.log('➡️ Incoming Slack request:', req.method, req.url)
+  next()
+})
+
+// ─────────────────────────────────────────────
+// Slack Bolt App
+// ─────────────────────────────────────────────
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   receiver
 })
 
-// 👇 Slash command
+// ─────────────────────────────────────────────
+// Slash Command: /todo
+// ─────────────────────────────────────────────
 app.command('/todo', async ({ command, ack, say }) => {
-  await ack()
+  console.log('📥 /todo command received')
+  console.log('Command payload:', {
+    text: command.text,
+    user: command.user_id,
+    channel: command.channel_id
+  })
 
-  const text = command.text.trim()
+  try {
+    await ack()
+    console.log('✅ ACK sent to Slack')
 
-  if (text.startsWith('add')) {
-    const title = text.replace('add', '').trim()
+    const text = command.text.trim()
 
-    await supabase.from('tasks').insert({
-      title,
-      created_by: command.user_id,
-      assigned_to: command.user_id
-    })
+    if (text.startsWith('add')) {
+      const title = text.replace(/^add/i, '').trim()
 
-    await say(`✅ Task added: *${title}*`)
-    return
-  }
+      console.log('📝 Adding task:', title)
 
-  if (text === 'list') {
-    const { data } = await supabase
-      .from('tasks')
-      .select('*')
-      .eq('assigned_to', command.user_id)
-      .eq('status', 'open')
+      const { error } = await supabase.from('tasks').insert({
+        title,
+        created_by: command.user_id,
+        assigned_to: command.user_id,
+        channel_id: command.channel_id
+      })
 
-    if (!data || data.length === 0) {
-      await say('🎉 No open tasks')
+      if (error) {
+        console.error('❌ Supabase insert error:', error)
+        await say('❌ Failed to add task')
+        return
+      }
+
+      await say(`✅ Task added: *${title}*`)
+      console.log('✅ Task added successfully')
       return
     }
 
-    const list = data.map((t, i) => `${i + 1}. ${t.title}`).join('\n')
-    await say(`📝 *Your Tasks*\n${list}`)
+    if (text === 'list') {
+      console.log('📋 Listing tasks')
+
+      const { data, error } = await supabase
+        .from('tasks')
+        .select('*')
+        .eq('assigned_to', command.user_id)
+        .eq('status', 'open')
+
+      if (error) {
+        console.error('❌ Supabase fetch error:', error)
+        await say('❌ Failed to fetch tasks')
+        return
+      }
+
+      if (!data || data.length === 0) {
+        await say('🎉 No open tasks')
+        return
+      }
+
+      const list = data.map((t, i) => `${i + 1}. ${t.title}`).join('\n')
+      await say(`📝 *Your Tasks*\n${list}`)
+      console.log('✅ Task list sent')
+      return
+    }
+
+    await say('❓ Unknown command. Try `/todo add <task>` or `/todo list`')
+  } catch (err) {
+    console.error('🔥 ERROR inside /todo handler:', err)
   }
 })
 
-// 👇 App Home
-app.event('app_home_opened', handleHome)
+// ─────────────────────────────────────────────
+// App Home Event
+// ─────────────────────────────────────────────
+app.event('app_home_opened', async (payload) => {
+  console.log('🏠 App Home opened by user:', payload.event.user)
+  await handleHome(payload)
+})
 
-// 👇 Start Express manually (Render-friendly)
+// ─────────────────────────────────────────────
+// Start Express Server (Render-friendly)
+// ─────────────────────────────────────────────
 const server = express()
 server.use('/slack/events', receiver.router)
 
