@@ -1,9 +1,12 @@
-import { App } from '@slack/bolt'
+import pkg from '@slack/bolt'
 import dotenv from 'dotenv'
 import { handleHome } from './home.js'
 import { supabase } from './supabase.js'
 
+const { App } = pkg
+
 dotenv.config()
+
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
