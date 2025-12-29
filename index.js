@@ -122,8 +122,25 @@ app.event('app_home_opened', async (payload) => {
 // ─────────────────────────────────────────────
 // Start Express Server (Render-friendly)
 // ─────────────────────────────────────────────
+
 const server = express()
+
+// Needed to read Slack's challenge payload
+server.use(express.json())
+
+// 👇 Handle Slack URL verification explicitly
+server.post('/slack/events', (req, res, next) => {
+  if (req.body && req.body.type === 'url_verification') {
+    console.log('🧩 Slack URL verification challenge received')
+    return res.status(200).json({ challenge: req.body.challenge })
+  }
+  next()
+})
+
+// 👇 Pass all other Slack events to Bolt
 server.use('/slack/events', receiver.router)
+
+
 
 const PORT = process.env.PORT || 3000
 server.listen(PORT, () => {
