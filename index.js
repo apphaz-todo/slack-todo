@@ -14,7 +14,8 @@ console.log('🚀 Starting Slack Todo App')
 // ExpressReceiver (Slack handles body + signature)
 // ─────────────────────────────────────────────
 const receiver = new ExpressReceiver({
-  signingSecret: process.env.SLACK_SIGNING_SECRET
+  signingSecret: process.env.SLACK_SIGNING_SECRET,
+  processBeforeResponse: true
 })
 
 // ✅ SAFE logging (DO NOT touch body)
