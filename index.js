@@ -127,7 +127,7 @@ async function publishHome(userId, client, tab = 'home') {
           type: 'mrkdwn',
           text:
              (t.note ? `\n📝 ${t.note}` : '') + 
-             `📅 ${formatDate(t.due_date)}` +
+             `\n📅 ${formatDate(t.due_date)}` +
             `\n👤 Assignee: <@${t.assigned_to}>` +
             (t.watchers?.length
               ? `\n👀 Watchers: ${t.watchers.map(u => `<@${u}>`).join(', ')}`
