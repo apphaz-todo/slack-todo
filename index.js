@@ -4,98 +4,87 @@ import { createClient } from '@supabase/supabase-js';
 
 const { App } = pkg;
 
-/* =================================================
+/* =====================================================
    ENV CHECK
-================================================= */
+===================================================== */
 console.log('🔍 Checking environment variables...');
-if (
-  !process.env.SLACK_BOT_TOKEN ||
-  !process.env.SLACK_SIGNING_SECRET ||
-  !process.env.SUPABASE_URL ||
-  !process.env.SUPABASE_SERVICE_ROLE_KEY
-) {
-  console.error('❌ Missing environment variables');
-  throw new Error('Missing environment variables');
-}
-console.log('✅ Environment variables OK');
+[
+  'SLACK_BOT_TOKEN',
+  'SLACK_SIGNING_SECRET',
+  'SUPABASE_URL',
+  'SUPABASE_SERVICE_ROLE_KEY',
+].forEach(v => {
+  if (!process.env[v]) {
+    console.error(`❌ Missing ${v}`);
+    throw new Error('Missing env vars');
+  }
+});
+console.log('✅ Environment OK');
 
-/* =================================================
-   SLACK APP INIT
-================================================= */
-console.log('⚙️ Initializing Slack app...');
+/* =====================================================
+   INIT
+===================================================== */
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   signingSecret: process.env.SLACK_SIGNING_SECRET,
   port: process.env.PORT || 3000,
 });
-console.log('✅ Slack app initialized');
 
-/* =================================================
-   SUPABASE INIT
-================================================= */
-console.log('⚙️ Initializing Supabase...');
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
-console.log('✅ Supabase client ready');
 
-/* =================================================
-   REMINDER OPTIONS
-================================================= */
+console.log('⚡ App initialized');
+
+/* =====================================================
+   CONSTANTS
+===================================================== */
 const REMINDER_OPTIONS = [
-  { text: '🌅 Beginning of Day', value: 'bod' },
-  { text: '🍱 After Lunch', value: 'after_lunch' },
-  { text: '🌙 End of Day', value: 'eod' },
-  ...Array.from({ length: 18 }, (_, i) => {
-    const hour = i + 6;
-    return {
-      text: `🕒 ${hour}:00`,
-      value: `${hour}:00`,
-    };
-  }),
-].map(o => ({
-  text: { type: 'plain_text', text: o.text },
-  value: o.value,
+  ['🌅 Beginning of Day', 'bod'],
+  ['🍱 After Lunch', 'after_lunch'],
+  ['🌙 End of Day', 'eod'],
+  ...Array.from({ length: 18 }, (_, i) => [`🕒 ${i + 6}:00`, `${i + 6}:00`]),
+].map(([text, value]) => ({
+  text: { type: 'plain_text', text },
+  value,
 }));
 
-/* =================================================
-   HOME TAB (UNCHANGED, WORKING)
-================================================= */
-async function publishHome(userId, client, activeTab = 'home') {
-  console.log(`🏠 Publishing Home tab | user=${userId} | tab=${activeTab}`);
+/* =====================================================
+   HOME TAB
+===================================================== */
+async function publishHome(userId, client, tab = 'home') {
+  console.log(`🏠 Publish Home | user=${userId} | tab=${tab}`);
 
   const { data: tasks = [] } = await supabase
     .from('tasks')
     .select('*')
-    .or(`assigned_to.eq.${userId},created_by.eq.${userId},watchers.cs.{${userId}}`)
+    .or(
+      `assigned_to.eq.${userId},created_by.eq.${userId},watchers.cs.{${userId}}`
+    )
     .order('created_at', { ascending: true });
+
+  let filtered = [];
+  if (tab === 'completed') filtered = tasks.filter(t => t.status === 'done');
+  else if (tab === 'archived') filtered = tasks.filter(t => t.status === 'archived');
+  else if (tab === 'watching')
+    filtered = tasks.filter(t => t.watchers?.includes(userId));
+  else filtered = tasks.filter(t => t.status === 'open');
 
   const blocks = [];
 
+  /* Tabs */
   blocks.push({
     type: 'actions',
     elements: [
-      tabButton('Home', 'home', activeTab),
-      tabButton('Completed', 'completed', activeTab),
-      tabButton('Archived', 'archived', activeTab),
-      tabButton('Delegated', 'delegated', activeTab),
-      tabButton('Watching', 'watching', activeTab),
+      tabBtn('Home', 'home', tab),
+      tabBtn('Completed', 'completed', tab),
+      tabBtn('Archived', 'archived', tab),
+      tabBtn('Watching', 'watching', tab),
     ],
   });
 
   blocks.push({ type: 'divider' });
-
-  const filtered =
-    activeTab === 'completed'
-      ? tasks.filter(t => t.status === 'done')
-      : activeTab === 'archived'
-      ? tasks.filter(t => t.status === 'archived')
-      : activeTab === 'delegated'
-      ? tasks.filter(t => t.created_by === userId && t.assigned_to !== userId)
-      : activeTab === 'watching'
-      ? tasks.filter(t => t.watchers?.includes(userId))
-      : tasks.filter(t => t.status === 'open');
 
   if (!filtered.length) {
     blocks.push({
@@ -104,34 +93,34 @@ async function publishHome(userId, client, activeTab = 'home') {
     });
   }
 
-  for (const task of filtered) {
+  for (const t of filtered) {
     blocks.push(
       {
         type: 'section',
-        text: { type: 'mrkdwn', text: `🚩 *${task.title}*` },
+        text: { type: 'mrkdwn', text: `🚩 *${t.title}*` },
       },
       {
         type: 'context',
         elements: [
           {
             type: 'mrkdwn',
-            text:
-              `Owner: <@${task.created_by}> | Assignee: <@${task.assigned_to}>` +
-              (task.note ? `\n📝 ${task.note}` : ''),
+            text: `📅 ${t.due_date || 'No due date'}${
+              t.note ? `\n📝 ${t.note}` : ''
+            }`,
           },
         ],
       },
       {
         type: 'actions',
         elements: [
-          ...(task.status === 'open'
+          ...(t.status === 'open'
             ? [
                 {
                   type: 'button',
                   text: { type: 'plain_text', text: 'Complete' },
                   style: 'primary',
                   action_id: 'task_complete',
-                  value: task.id,
+                  value: t.id,
                 },
               ]
             : []),
@@ -139,7 +128,13 @@ async function publishHome(userId, client, activeTab = 'home') {
             type: 'button',
             text: { type: 'plain_text', text: 'View' },
             action_id: 'task_view',
-            value: task.id,
+            value: t.id,
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Edit' },
+            action_id: 'task_edit',
+            value: t.id,
           },
         ],
       },
@@ -147,181 +142,281 @@ async function publishHome(userId, client, activeTab = 'home') {
     );
   }
 
+  /* Footer */
+  blocks.push({
+    type: 'actions',
+    elements: [
+      utilBtn('🔍 Search', 'search'),
+      utilBtn('🆕 New task', 'new'),
+    ],
+  });
+
   await client.views.publish({
     user_id: userId,
     view: { type: 'home', blocks },
   });
 
-  console.log('✅ Home tab published');
+  console.log('✅ Home published');
 }
 
-/* =================================================
-   HELPERS
-================================================= */
-function tabButton(text, value, current) {
-  return {
-    type: 'button',
-    text: { type: 'plain_text', text },
-    action_id: `home_tab_${value}`,
-    value,
-    style: value === current ? 'primary' : undefined,
-  };
-}
+const tabBtn = (text, value, active) => ({
+  type: 'button',
+  text: { type: 'plain_text', text },
+  action_id: `home_tab_${value}`,
+  style: value === active ? 'primary' : undefined,
+});
 
-/* =================================================
-   EVENTS & ACTIONS
-================================================= */
+const utilBtn = (text, value) => ({
+  type: 'button',
+  text: { type: 'plain_text', text },
+  action_id: `util_${value}`,
+});
+
+/* =====================================================
+   EVENTS
+===================================================== */
 app.event('app_home_opened', async ({ event, client }) => {
-  console.log(`🏠 Home opened by ${event.user}`);
+  console.log('🏠 app_home_opened');
   await publishHome(event.user, client);
 });
 
 app.action(/^home_tab_/, async ({ body, ack, client }) => {
   await ack();
   const tab = body.actions[0].action_id.replace('home_tab_', '');
-  console.log(`🔁 Switched to tab ${tab}`);
   await publishHome(body.user.id, client, tab);
 });
 
+/* =====================================================
+   TASK ACTIONS
+===================================================== */
 app.action('task_complete', async ({ body, ack, client }) => {
   await ack();
-  const taskId = body.actions[0].value;
-  console.log(`✅ Completing task ${taskId}`);
-
-  await supabase.from('tasks').update({ status: 'done' }).eq('id', taskId);
+  console.log('✅ Complete task', body.actions[0].value);
+  await supabase.from('tasks').update({ status: 'done' }).eq('id', body.actions[0].value);
   await publishHome(body.user.id, client);
 });
 
-/* =================================================
-   /todo → NEW TASK MODAL (FULL FEATURED)
-================================================= */
-app.command('/todo', async ({ command, ack, client }) => {
+app.action('task_view', async ({ body, ack, client }) => {
   await ack();
-  console.log(`/todo invoked by ${command.user_id}`);
+  const { data: t } = await supabase
+    .from('tasks')
+    .select('*')
+    .eq('id', body.actions[0].value)
+    .single();
 
   await client.views.open({
-    trigger_id: command.trigger_id,
+    trigger_id: body.trigger_id,
     view: {
       type: 'modal',
-      callback_id: 'create_task',
-      title: { type: 'plain_text', text: 'New task' },
-      submit: { type: 'plain_text', text: 'Submit' },
-      close: { type: 'plain_text', text: 'Cancel' },
+      title: { type: 'plain_text', text: 'Todo' },
+      close: { type: 'plain_text', text: 'Close' },
       blocks: [
+        { type: 'section', text: { type: 'mrkdwn', text: `*${t.title}*` } },
+        t.note && { type: 'section', text: { type: 'mrkdwn', text: t.note } },
         {
-          type: 'input',
-          block_id: 'title',
-          label: { type: 'plain_text', text: 'Task' },
-          element: {
-            type: 'plain_text_input',
-            action_id: 'value',
-            placeholder: {
-              type: 'plain_text',
-              text: "What's next",
+          type: 'context',
+          elements: [
+            {
+              type: 'mrkdwn',
+              text: `👤 <@${t.assigned_to}> | 📅 ${t.due_date || '—'} | #${t.project || '—'}`,
             },
-          },
+          ],
         },
-        {
-          type: 'input',
-          block_id: 'due',
-          label: { type: 'plain_text', text: 'Due date' },
-          element: { type: 'datepicker', action_id: 'value' },
-        },
-        {
-          type: 'input',
-          block_id: 'assignee',
-          label: { type: 'plain_text', text: 'Assignee' },
-          element: {
-            type: 'users_select',
-            action_id: 'value',
-            initial_user: command.user_id,
-          },
-        },
-        {
-          type: 'input',
-          block_id: 'project',
-          optional: true,
-          label: { type: 'plain_text', text: 'Project (optional)' },
-          element: {
-            type: 'channels_select',
-            action_id: 'value',
-          },
-        },
-        {
-          type: 'input',
-          block_id: 'reminders',
-          optional: true,
-          label: { type: 'plain_text', text: 'Reminders' },
-          element: {
-            type: 'multi_static_select',
-            action_id: 'value',
-            options: REMINDER_OPTIONS,
-          },
-        },
-        {
-          type: 'input',
-          block_id: 'watchers',
-          optional: true,
-          label: { type: 'plain_text', text: 'Watchers' },
-          element: {
-            type: 'multi_users_select',
-            action_id: 'value',
-          },
-        },
-        {
-          type: 'input',
-          block_id: 'note',
-          optional: true,
-          label: { type: 'plain_text', text: 'Notes' },
-          element: {
-            type: 'plain_text_input',
-            action_id: 'value',
-            multiline: true,
-          },
-        },
-      ],
+      ].filter(Boolean),
     },
   });
 });
 
-/* =================================================
-   CREATE TASK SUBMIT
-================================================= */
+/* =====================================================
+   EDIT TASK
+===================================================== */
+app.action('task_edit', async ({ body, ack, client }) => {
+  await ack();
+  const { data: t } = await supabase
+    .from('tasks')
+    .select('*')
+    .eq('id', body.actions[0].value)
+    .single();
+
+  if (t.created_by !== body.user.id) {
+    console.log('⛔ Edit blocked: not owner');
+    return;
+  }
+
+  await openTaskModal(client, body.trigger_id, 'edit_task', t);
+});
+
+/* =====================================================
+   /todo COMMAND
+===================================================== */
+app.command('/todo', async ({ command, ack, client }) => {
+  await ack();
+  console.log('/todo:', command.text);
+
+  if (command.text.trim() === 'list') {
+    console.log('➡ Redirecting to Home tab');
+    await publishHome(command.user_id, client);
+    return;
+  }
+
+  await openTaskModal(client, command.trigger_id, 'create_task');
+});
+
+/* =====================================================
+   MODALS
+===================================================== */
+async function openTaskModal(client, triggerId, callback, task = {}) {
+  await client.views.open({
+    trigger_id: triggerId,
+    view: {
+      type: 'modal',
+      callback_id: callback,
+      title: { type: 'plain_text', text: task.id ? 'Edit task' : 'New task' },
+      submit: { type: 'plain_text', text: 'Submit' },
+      close: { type: 'plain_text', text: 'Cancel' },
+      private_metadata: task.id || '',
+      blocks: [
+        input('Task', 'title', task.title),
+        date('Due date', 'due_date', task.due_date),
+        user('Assignee', 'assigned_to', task.assigned_to),
+        channel('Project (optional)', 'project', task.project),
+        multi('Reminders', 'reminders', task.reminders),
+        multiUsers('Watchers', 'watchers', task.watchers),
+        textarea('Notes', 'note', task.note),
+      ],
+    },
+  });
+}
+
+/* =====================================================
+   SUBMITS
+===================================================== */
 app.view('create_task', async ({ ack, body, view, client }) => {
   await ack();
-  console.log('➕ Creating task from modal');
+  console.log('➕ Create task');
 
   const v = view.state.values;
-
-  const title = v.title.value.value;
-  const due_date = v.due.value.selected_date;
-  const assigned_to = v.assignee.value.selected_user;
-  const project = v.project?.value?.selected_channel || null;
-  const reminders =
-    v.reminders?.value?.selected_options?.map(o => o.value) || [];
-  const watchers = v.watchers?.value?.selected_users || [];
-  const note = v.note?.value?.value || null;
-
   await supabase.from('tasks').insert({
-    title,
-    due_date,
-    assigned_to,
-    project,
-    reminders,
-    watchers,
-    note,
-    status: 'open',
+    title: v.title.value.value,
+    due_date: v.due_date.value.selected_date,
+    assigned_to: v.assigned_to.value.selected_user,
+    project: v.project?.value?.selected_channel || null,
+    reminders: v.reminders?.value?.selected_options?.map(o => o.value) || [],
+    watchers: v.watchers?.value?.selected_users || [],
+    note: v.note?.value?.value || null,
     created_by: body.user.id,
+    status: 'open',
   });
 
-  console.log('✅ Task inserted into DB');
+  await publishHome(body.user.id, client);
+
+  await client.views.open({
+    trigger_id: body.trigger_id,
+    view: {
+      type: 'modal',
+      title: { type: 'plain_text', text: 'Success' },
+      close: { type: 'plain_text', text: 'Close' },
+      blocks: [{ type: 'section', text: { type: 'mrkdwn', text: '✅ Task created successfully' } }],
+    },
+  });
+});
+
+app.view('edit_task', async ({ ack, body, view, client }) => {
+  await ack();
+  console.log('✏️ Update task');
+
+  const id = view.private_metadata;
+  const v = view.state.values;
+
+  await supabase.from('tasks').update({
+    title: v.title.value.value,
+    due_date: v.due_date.value.selected_date,
+    assigned_to: v.assigned_to.value.selected_user,
+    project: v.project?.value?.selected_channel || null,
+    reminders: v.reminders?.value?.selected_options?.map(o => o.value) || [],
+    watchers: v.watchers?.value?.selected_users || [],
+    note: v.note?.value?.value || null,
+  }).eq('id', id);
+
   await publishHome(body.user.id, client);
 });
 
-/* =================================================
+/* =====================================================
+   BLOCK HELPERS
+===================================================== */
+const input = (label, id, val) => ({
+  type: 'input',
+  block_id: id,
+  label: { type: 'plain_text', text: label },
+  element: { type: 'plain_text_input', action_id: 'value', initial_value: val || '' },
+});
+
+const textarea = (label, id, val) => ({
+  type: 'input',
+  block_id: id,
+  optional: true,
+  label: { type: 'plain_text', text: label },
+  element: {
+    type: 'plain_text_input',
+    action_id: 'value',
+    multiline: true,
+    initial_value: val || '',
+  },
+});
+
+const date = (label, id, val) => ({
+  type: 'input',
+  block_id: id,
+  label: { type: 'plain_text', text: label },
+  element: { type: 'datepicker', action_id: 'value', initial_date: val || undefined },
+});
+
+const user = (label, id, val) => ({
+  type: 'input',
+  block_id: id,
+  label: { type: 'plain_text', text: label },
+  element: { type: 'users_select', action_id: 'value', initial_user: val },
+});
+
+const channel = (label, id, val) => ({
+  type: 'input',
+  block_id: id,
+  optional: true,
+  label: { type: 'plain_text', text: label },
+  element: { type: 'channels_select', action_id: 'value', initial_channel: val },
+});
+
+const multi = (label, id, vals) => ({
+  type: 'input',
+  block_id: id,
+  optional: true,
+  label: { type: 'plain_text', text: label },
+  element: {
+    type: 'multi_static_select',
+    action_id: 'value',
+    options: REMINDER_OPTIONS,
+    initial_options: (vals || []).map(v =>
+      REMINDER_OPTIONS.find(o => o.value === v)
+    ),
+  },
+});
+
+const multiUsers = (label, id, vals) => ({
+  type: 'input',
+  block_id: id,
+  optional: true,
+  label: { type: 'plain_text', text: label },
+  element: {
+    type: 'multi_users_select',
+    action_id: 'value',
+    initial_users: vals || [],
+  },
+});
+
+/* =====================================================
    START
-================================================= */
+===================================================== */
 (async () => {
   await app.start();
-  console.log('⚡ Slack Todo app running');
+  console.log('🚀 Slack Todo app running');
 })();
