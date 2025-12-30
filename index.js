@@ -2,7 +2,8 @@ import pkg from '@slack/bolt'
 import dotenv from 'dotenv'
 import express from 'express'
 import { handleHome } from './home.js'
-import { supabase } from './supabase.js'
+//import { supabase } from './supabase.js'
+import { supabase, debugSupabaseConnection } from './supabase.js'
 
 dotenv.config()
 
