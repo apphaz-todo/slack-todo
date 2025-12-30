@@ -7,8 +7,13 @@ const { App } = pkg;
 /* -----------------------------
    ENV CHECK
 ------------------------------ */
-if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-  throw new Error('❌ Missing Supabase environment variables');
+if (
+  !process.env.SLACK_BOT_TOKEN ||
+  !process.env.SLACK_SIGNING_SECRET ||
+  !process.env.SUPABASE_URL ||
+  !process.env.SUPABASE_SERVICE_ROLE_KEY
+) {
+  throw new Error('❌ Missing environment variables');
 }
 
 /* -----------------------------
@@ -30,98 +35,251 @@ const supabase = createClient(
 );
 
 /* -----------------------------
-   Helpers
+   HOME TAB (OWNER + ASSIGNEE VISIBILITY)
 ------------------------------ */
 async function publishHome(userId, client) {
-  const { data: tasks } = await supabase
+  const { data: tasks, error } = await supabase
     .from('tasks')
-    .select('id,title,status')
-    .eq('assigned_to', userId)
+    .select('id,title,status,assigned_to,created_by')
+    .or(`assigned_to.eq.${userId},created_by.eq.${userId}`)
     .order('created_at', { ascending: false });
 
-  const openTasks = tasks?.filter(t => t.status === 'open') || [];
-  const doneTasks = tasks?.filter(t => t.status === 'done') || [];
+  if (error) {
+    console.error('Home fetch error:', error);
+    return;
+  }
+
+  const openTasks = tasks.filter(t => t.status === 'open');
+  const doneTasks = tasks.filter(t => t.status === 'done');
+
+  const blocks = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: '📝 Your Tasks' },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `📊 *Stats*\n• Open: ${openTasks.length}\n• Done: ${doneTasks.length}`,
+      },
+    },
+    { type: 'divider' },
+  ];
+
+  if (openTasks.length) {
+    openTasks.forEach(task => {
+      const roleLabel =
+        task.created_by === userId ? '🧑‍💼 Owner' : '👤 Assigned';
+
+      blocks.push(
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `*${task.title}*\n_${roleLabel}_`,
+          },
+          accessory: {
+            type: 'button',
+            text: { type: 'plain_text', text: '✅ Done' },
+            action_id: 'task_done',
+            value: task.id,
+          },
+        },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: '✏️ Edit' },
+              action_id: 'task_edit',
+              value: task.id,
+            },
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: '🗑️ Delete' },
+              action_id: 'task_delete',
+              value: task.id,
+              style: 'danger',
+            },
+          ],
+        }
+      );
+    });
+  } else {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: '📭 No open tasks' },
+    });
+  }
+
+  blocks.push({ type: 'divider' });
+
+  blocks.push({
+    type: 'header',
+    text: { type: 'plain_text', text: '✅ Completed' },
+  });
+
+  if (doneTasks.length) {
+    doneTasks.forEach(task => {
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `✔️ ${task.title}` },
+      });
+    });
+  } else {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: '— None yet —' },
+    });
+  }
 
   await client.views.publish({
     user_id: userId,
     view: {
       type: 'home',
-      blocks: [
-        {
-          type: 'header',
-          text: { type: 'plain_text', text: '📝 Your Tasks' },
-        },
-
-        ...(openTasks.length
-          ? openTasks.flatMap(task => [
-              {
-                type: 'section',
-                text: {
-                  type: 'mrkdwn',
-                  text: `• *${task.title}*`,
-                },
-                accessory: {
-                  type: 'button',
-                  text: { type: 'plain_text', text: '✅ Done' },
-                  action_id: 'task_done',
-                  value: task.id,
-                },
-              },
-              {
-                type: 'context',
-                elements: [
-                  {
-                    type: 'button',
-                    text: { type: 'plain_text', text: '🗑️ Delete' },
-                    action_id: 'task_delete',
-                    value: task.id,
-                  },
-                ],
-              },
-            ])
-          : [
-              {
-                type: 'section',
-                text: { type: 'mrkdwn', text: '📭 No open tasks' },
-              },
-            ]),
-
-        { type: 'divider' },
-
-        {
-          type: 'header',
-          text: { type: 'plain_text', text: '✅ Completed' },
-        },
-
-        ...(doneTasks.length
-          ? doneTasks.map(task => ({
-              type: 'section',
-              text: {
-                type: 'mrkdwn',
-                text: `✔️ ${task.title}`,
-              },
-            }))
-          : [
-              {
-                type: 'section',
-                text: { type: 'mrkdwn', text: '— None yet —' },
-              },
-            ]),
-      ],
+      blocks,
     },
   });
 }
 
 /* -----------------------------
-   App Home Opened
+   HOME OPEN EVENT
 ------------------------------ */
 app.event('app_home_opened', async ({ event, client }) => {
-  console.log('🏠 Home opened:', event.user);
   await publishHome(event.user, client);
 });
 
 /* -----------------------------
-   Button Actions
+   SLASH COMMAND (/todo)
+------------------------------ */
+app.command('/todo', async ({ command, ack, client, respond }) => {
+  await ack();
+  const text = command.text.trim();
+
+  // /todo assign @user task
+  if (text.startsWith('assign')) {
+    const match = text.match(/assign\s+<@(\w+)>\s+(.+)/);
+    if (!match) {
+      await respond('❌ `/todo assign @user task`');
+      return;
+    }
+
+    const [, assignee, task] = match;
+
+    await supabase.from('tasks').insert({
+      title: task,
+      created_by: command.user_id, // 👈 OWNER
+      assigned_to: assignee,       // 👈 ASSIGNEE
+      status: 'open',
+    });
+
+    await respond(`✅ Task assigned to <@${assignee}>`);
+    return;
+  }
+
+  // Default → open modal
+  await client.views.open({
+    trigger_id: command.trigger_id,
+    view: {
+      type: 'modal',
+      callback_id: 'add_task_modal',
+      title: { type: 'plain_text', text: 'Add Task' },
+      submit: { type: 'plain_text', text: 'Add' },
+      close: { type: 'plain_text', text: 'Cancel' },
+      blocks: [
+        {
+          type: 'input',
+          block_id: 'task_input',
+          label: { type: 'plain_text', text: 'Task description' },
+          element: {
+            type: 'plain_text_input',
+            action_id: 'task_value',
+            placeholder: {
+              type: 'plain_text',
+              text: 'What do you need to do?',
+            },
+          },
+        },
+      ],
+    },
+  });
+});
+
+/* -----------------------------
+   ADD TASK MODAL SUBMIT
+------------------------------ */
+app.view('add_task_modal', async ({ ack, body, view, client }) => {
+  await ack();
+
+  const task =
+    view.state.values.task_input.task_value.value;
+
+  await supabase.from('tasks').insert({
+    title: task,
+    created_by: body.user.id,   // 👈 OWNER
+    assigned_to: body.user.id,  // 👈 DEFAULT ASSIGNEE
+    status: 'open',
+  });
+
+  await publishHome(body.user.id, client);
+});
+
+/* -----------------------------
+   EDIT TASK
+------------------------------ */
+app.action('task_edit', async ({ body, ack, client }) => {
+  await ack();
+
+  const taskId = body.actions[0].value;
+
+  const { data } = await supabase
+    .from('tasks')
+    .select('title')
+    .eq('id', taskId)
+    .single();
+
+  await client.views.open({
+    trigger_id: body.trigger_id,
+    view: {
+      type: 'modal',
+      callback_id: 'edit_task_modal',
+      private_metadata: taskId,
+      title: { type: 'plain_text', text: 'Edit Task' },
+      submit: { type: 'plain_text', text: 'Save' },
+      blocks: [
+        {
+          type: 'input',
+          block_id: 'edit_input',
+          label: { type: 'plain_text', text: 'Task' },
+          element: {
+            type: 'plain_text_input',
+            action_id: 'value',
+            initial_value: data.title,
+          },
+        },
+      ],
+    },
+  });
+});
+
+app.view('edit_task_modal', async ({ ack, body, view, client }) => {
+  await ack();
+
+  const taskId = view.private_metadata;
+  const newText =
+    view.state.values.edit_input.value.value;
+
+  await supabase
+    .from('tasks')
+    .update({ title: newText })
+    .eq('id', taskId);
+
+  await publishHome(body.user.id, client);
+});
+
+/* -----------------------------
+   DONE / DELETE
 ------------------------------ */
 app.action('task_done', async ({ body, ack, client }) => {
   await ack();
@@ -146,63 +304,7 @@ app.action('task_delete', async ({ body, ack, client }) => {
 });
 
 /* -----------------------------
-   Slash Command
------------------------------- */
-app.command('/todo', async ({ command, ack, respond, client }) => {
-  await ack();
-
-  const [sub, ...rest] = command.text.trim().split(' ');
-  const text = rest.join(' ');
-
-  switch (sub) {
-    case 'add': {
-      if (!text) {
-        await respond('❌ `/todo add <task>`');
-        return;
-      }
-
-      await supabase.from('tasks').insert({
-        title: text,
-        assigned_to: command.user_id,
-        status: 'open',
-      });
-
-      await respond(`✅ Task added: *${text}*`);
-      await publishHome(command.user_id, client);
-      break;
-    }
-
-    case 'list': {
-      const { data } = await supabase
-        .from('tasks')
-        .select('id,title')
-        .eq('assigned_to', command.user_id)
-        .eq('status', 'open');
-
-      if (!data?.length) {
-        await respond('📭 No open tasks');
-        return;
-      }
-
-      await respond(
-        '📝 Your tasks:\n' +
-          data.map(t => `• (${t.id}) ${t.title}`).join('\n')
-      );
-      break;
-    }
-
-    case 'refresh':
-      await publishHome(command.user_id, client);
-      await respond('🔄 Home refreshed');
-      break;
-
-    default:
-      await respond('❓ `/todo add | list | refresh`');
-  }
-});
-
-/* -----------------------------
-   Start
+   START
 ------------------------------ */
 (async () => {
   await app.start();
