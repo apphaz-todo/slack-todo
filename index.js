@@ -5,6 +5,13 @@ import { createClient } from '@supabase/supabase-js';
 const { App } = pkg;
 
 /* -----------------------------
+   ENV CHECK
+------------------------------ */
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  throw new Error('❌ Missing Supabase environment variables');
+}
+
+/* -----------------------------
    Slack App
 ------------------------------ */
 const app = new App({
@@ -19,13 +26,33 @@ const app = new App({
 ------------------------------ */
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
+  process.env.SUPABASE_SERVICE_ROLE_KEY
 );
+
+/* -----------------------------
+   DB Health Check
+------------------------------ */
+async function checkDBConnection() {
+  console.log('🔍 Checking Supabase connection...');
+
+  const { data, error } = await supabase
+    .from('tasks')
+    .select('id')
+    .limit(1);
+
+  if (error) {
+    console.error('❌ Supabase connection FAILED');
+    console.error(error);
+    process.exit(1);
+  }
+
+  console.log('✅ Supabase connected');
+}
 
 /* -----------------------------
    /todo Command
 ------------------------------ */
-app.command('/todo', async ({ command, ack, say, logger }) => {
+app.command('/todo', async ({ command, ack, respond, logger }) => {
   await ack();
 
   const [sub, ...rest] = command.text.trim().split(' ');
@@ -33,52 +60,66 @@ app.command('/todo', async ({ command, ack, say, logger }) => {
 
   try {
     switch (sub) {
-      case 'add':
-        if (!text) return say('❌ `/todo add <task>`');
+      case 'add': {
+        if (!text) {
+          await respond('❌ `/todo add <task>`');
+          return;
+        }
 
-        await supabase.from('tasks').insert({
-          title: text,
-          assigned_to: command.user_id,
-          status: 'open',
-        });
+        console.log('➕ Inserting task:', text);
 
-        await say(`✅ Added: *${text}*`);
+        const { data, error } = await supabase
+          .from('tasks')
+          .insert({
+            title: text,
+            assigned_to: command.user_id,
+            status: 'open',
+          })
+          .select();
+
+        if (error) {
+          console.error('❌ Insert failed');
+          console.error(error);
+          await respond(`❌ DB Error: ${error.message}`);
+          return;
+        }
+
+        console.log('✅ Insert success:', data);
+        await respond(`✅ Task added: *${text}*`);
         break;
+      }
 
       case 'list': {
-        const { data } = await supabase
+        const { data, error } = await supabase
           .from('tasks')
           .select('id,title')
           .eq('assigned_to', command.user_id)
           .eq('status', 'open');
 
-        if (!data?.length) return say('📭 No open tasks.');
+        if (error) {
+          console.error(error);
+          await respond('❌ Failed to fetch tasks');
+          return;
+        }
 
-        await say(
-          '📝 Tasks:\n' +
+        if (!data.length) {
+          await respond('📭 No open tasks.');
+          return;
+        }
+
+        await respond(
+          '📝 Your tasks:\n' +
             data.map(t => `• (${t.id}) ${t.title}`).join('\n')
         );
         break;
       }
 
-      case 'done':
-        if (!text) return say('❌ `/todo done <id>`');
-
-        await supabase
-          .from('tasks')
-          .update({ status: 'done' })
-          .eq('id', text)
-          .eq('assigned_to', command.user_id);
-
-        await say(`✅ Task ${text} completed`);
-        break;
-
       default:
-        await say('❓ `/todo add | list | done`');
+        await respond('❓ `/todo add | list | done`');
     }
   } catch (e) {
     logger.error(e);
-    await say('❌ Error occurred');
+    await respond('❌ Unexpected error occurred');
   }
 });
 
@@ -86,6 +127,7 @@ app.command('/todo', async ({ command, ack, say, logger }) => {
    Start Server
 ------------------------------ */
 (async () => {
+  await checkDBConnection();
   await app.start();
   console.log('⚡ Slack Todo app running');
 })();
