@@ -35,21 +35,24 @@ const supabase = createClient(
 );
 
 /* -----------------------------
-   UTIL
+   TABLE FORMATTER
 ------------------------------ */
-function formatTaskRow(task) {
-  return (
-    `*${task.title}*\n` +
-    `• Owner: <@${task.created_by}>\n` +
-    `• Assignee: <@${task.assigned_to}>\n` +
-    `• Due: ${task.due_date || '—'}\n` +
-    `• Reminder: ${task.reminder_at ? '⏰ Set' : '—'}\n` +
-    `• Watchers: ${
-      task.watchers?.length
-        ? task.watchers.map(u => `<@${u}>`).join(', ')
-        : '—'
-    }`
-  );
+function formatTable(tasks) {
+  const header =
+    '`TASK                 | ASSIGNEE | DUE        | REM | OWNER`\n' +
+    '`---------------------+----------+------------+-----+--------`';
+
+  const rows = tasks.map(t => {
+    const task = t.title.padEnd(21).slice(0, 21);
+    const assignee = `<@${t.assigned_to}>`.padEnd(10).slice(0, 10);
+    const due = (t.due_date || '—').padEnd(10).slice(0, 10);
+    const rem = t.reminder_at ? '⏰' : '—';
+    const owner = `<@${t.created_by}>`;
+
+    return `\`${task} | ${assignee} | ${due} | ${rem} | ${owner}\``;
+  });
+
+  return [header, ...rows].join('\n');
 }
 
 /* -----------------------------
@@ -60,34 +63,29 @@ async function publishHome(userId, client) {
     .from('tasks')
     .select('*')
     .or(`assigned_to.eq.${userId},created_by.eq.${userId}`)
-    .order('created_at', { ascending: false });
-
-  const openTasks = (tasks || []).filter(t => t.status === 'open');
+    .eq('status', 'open')
+    .order('created_at', { ascending: true }); // 👈 FIX
 
   const blocks = [
     {
       type: 'header',
-      text: { type: 'plain_text', text: '📝 Your Tasks' },
+      text: { type: 'plain_text', text: '📝 Tasks' },
     },
   ];
 
-  if (!openTasks.length) {
+  if (!tasks || !tasks.length) {
     blocks.push({
       type: 'section',
       text: { type: 'mrkdwn', text: '📭 No open tasks' },
     });
-  }
+  } else {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: formatTable(tasks) },
+    });
 
-  openTasks.forEach(task => {
-    blocks.push(
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: formatTaskRow(task),
-        },
-      },
-      {
+    tasks.forEach(task => {
+      blocks.push({
         type: 'actions',
         elements: [
           {
@@ -104,10 +102,9 @@ async function publishHome(userId, client) {
             style: 'primary',
           },
         ],
-      },
-      { type: 'divider' }
-    );
-  });
+      });
+    });
+  }
 
   await client.views.publish({
     user_id: userId,
@@ -120,7 +117,7 @@ app.event('app_home_opened', async ({ event, client }) => {
 });
 
 /* -----------------------------
-   SLASH COMMAND
+   /todo COMMAND
 ------------------------------ */
 app.command('/todo', async ({ command, ack, respond, client }) => {
   await ack();
@@ -131,142 +128,115 @@ app.command('/todo', async ({ command, ack, respond, client }) => {
       .from('tasks')
       .select('*')
       .or(`assigned_to.eq.${command.user_id},created_by.eq.${command.user_id}`)
-      .eq('status', 'open');
+      .eq('status', 'open')
+      .order('created_at', { ascending: true });
 
-    if (!tasks?.length) {
+    if (!tasks || !tasks.length) {
       await respond('📭 No open tasks');
       return;
     }
 
-    await respond(
-      '*📝 Your Tasks*\n\n' +
-        tasks.map(t => formatTaskRow(t)).join('\n\n')
-    );
+    await respond(formatTable(tasks));
     return;
   }
 
-  // default → open modal
+  // default → create modal
   await client.views.open({
     trigger_id: command.trigger_id,
-    view: buildTaskModal(),
+    view: {
+      type: 'modal',
+      callback_id: 'create_task',
+      title: { type: 'plain_text', text: 'New Task' },
+      submit: { type: 'plain_text', text: 'Create' },
+      blocks: [
+        {
+          type: 'input',
+          block_id: 'title',
+          label: { type: 'plain_text', text: 'Task' },
+          element: {
+            type: 'plain_text_input',
+            action_id: 'value',
+          },
+        },
+      ],
+    },
   });
 });
 
 /* -----------------------------
-   MODAL (CUSTOM FIELDS ALWAYS VISIBLE)
+   CREATE TASK
 ------------------------------ */
-function buildTaskModal() {
-  return {
-    type: 'modal',
-    callback_id: 'new_task_modal',
-    title: { type: 'plain_text', text: 'New Task' },
-    submit: { type: 'plain_text', text: 'Create' },
-    close: { type: 'plain_text', text: 'Cancel' },
-    blocks: [
-      {
-        type: 'input',
-        block_id: 'task_block',
-        label: { type: 'plain_text', text: 'Task' },
-        element: {
-          type: 'plain_text_input',
-          action_id: 'task_value',
-        },
-      },
-      {
-        type: 'input',
-        block_id: 'due_date_block',
-        optional: true,
-        label: { type: 'plain_text', text: 'Due date' },
-        element: { type: 'datepicker', action_id: 'due_date' },
-      },
-      {
-        type: 'input',
-        block_id: 'reminder_block',
-        optional: true,
-        label: { type: 'plain_text', text: 'Reminder' },
-        element: {
-          type: 'static_select',
-          action_id: 'reminder_preset',
-          options: [
-            { text: { type: 'plain_text', text: 'Beginning of Day (9 AM)' }, value: 'bod' },
-            { text: { type: 'plain_text', text: 'After Lunch (2 PM)' }, value: 'after_lunch' },
-            { text: { type: 'plain_text', text: 'End of Day (5 PM)' }, value: 'eod' },
-            { text: { type: 'plain_text', text: 'Custom date & time' }, value: 'custom' },
-          ],
-        },
-      },
-      {
-        type: 'input',
-        block_id: 'custom_date_block',
-        optional: true,
-        label: { type: 'plain_text', text: 'Custom reminder date' },
-        element: { type: 'datepicker', action_id: 'custom_date' },
-      },
-      {
-        type: 'input',
-        block_id: 'custom_time_block',
-        optional: true,
-        label: { type: 'plain_text', text: 'Custom reminder time' },
-        element: { type: 'timepicker', action_id: 'custom_time' },
-      },
-      {
-        type: 'input',
-        block_id: 'watchers_block',
-        optional: true,
-        label: { type: 'plain_text', text: 'Watchers' },
-        element: {
-          type: 'multi_users_select',
-          action_id: 'watchers',
-        },
-      },
-    ],
-  };
-}
+app.view('create_task', async ({ ack, body, view, client }) => {
+  await ack();
+
+  const title = view.state.values.title.value.value;
+
+  await supabase.from('tasks').insert({
+    title,
+    created_by: body.user.id,
+    assigned_to: body.user.id,
+    status: 'open',
+  });
+
+  await publishHome(body.user.id, client);
+});
 
 /* -----------------------------
-   MODAL SUBMIT (VALIDATION)
+   EDIT TASK (OWNER ONLY)
 ------------------------------ */
-app.view('new_task_modal', async ({ ack, body, view, client }) => {
-  const preset =
-    view.state.values.reminder_block?.reminder_preset?.selected_option?.value;
+app.action('task_edit', async ({ body, ack, client }) => {
+  await ack();
 
-  const customDate =
-    view.state.values.custom_date_block?.custom_date?.selected_date;
+  const taskId = body.actions[0].value;
+  const userId = body.user.id;
 
-  const customTime =
-    view.state.values.custom_time_block?.custom_time?.selected_time;
+  const { data: task } = await supabase
+    .from('tasks')
+    .select('*')
+    .eq('id', taskId)
+    .single();
 
-  if (preset === 'custom' && (!customDate || !customTime)) {
-    await ack({
-      response_action: 'errors',
-      errors: {
-        custom_date_block: 'Custom date & time required',
-      },
+  if (task.created_by !== userId) {
+    await client.chat.postEphemeral({
+      channel: body.user.id,
+      user: userId,
+      text: '❌ Only the task owner can edit this task.',
     });
     return;
   }
 
+  await client.views.open({
+    trigger_id: body.trigger_id,
+    view: {
+      type: 'modal',
+      callback_id: 'edit_task',
+      private_metadata: taskId,
+      title: { type: 'plain_text', text: 'Edit Task' },
+      submit: { type: 'plain_text', text: 'Save' },
+      blocks: [
+        {
+          type: 'input',
+          block_id: 'title',
+          label: { type: 'plain_text', text: 'Task' },
+          element: {
+            type: 'plain_text_input',
+            action_id: 'value',
+            initial_value: task.title,
+          },
+        },
+      ],
+    },
+  });
+});
+
+app.view('edit_task', async ({ ack, body, view, client }) => {
   await ack();
 
-  const userId = body.user.id;
-  const task = view.state.values.task_block.task_value.value;
+  const taskId = view.private_metadata;
+  const title = view.state.values.title.value.value;
 
-  let reminderAt = null;
-  if (preset === 'custom') {
-    reminderAt = `${customDate}T${customTime}:00`;
-  }
-
-  await supabase.from('tasks').insert({
-    title: task,
-    created_by: userId,
-    assigned_to: userId,
-    status: 'open',
-    reminder_at: reminderAt,
-    watchers:
-      view.state.values.watchers_block?.watchers?.selected_users || [],
-  });
-
-  await publishHome(userId, client);
+  await supabase.from('tasks').update({ title }).eq('id', taskId);
+  await publishHome(body.user.id, client);
 });
 
 /* -----------------------------
@@ -274,6 +244,7 @@ app.view('new_task_modal', async ({ ack, body, view, client }) => {
 ------------------------------ */
 app.action('task_done', async ({ body, ack, client }) => {
   await ack();
+
   await supabase
     .from('tasks')
     .update({ status: 'done' })
