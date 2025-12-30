@@ -32,6 +32,28 @@ receiver.router.use((req, res, next) => {
   next()
 })
 
+receiver.router.use((req, res, next) => {
+  console.log('➡️ Incoming Slack request')
+  console.log('METHOD:', req.method)
+  console.log('PATH:', req.path)
+  console.log('HEADERS:', {
+    'content-type': req.headers['content-type'],
+    'user-agent': req.headers['user-agent'],
+    'x-slack-request-timestamp': req.headers['x-slack-request-timestamp'],
+    'x-slack-signature': req.headers['x-slack-signature'] ? 'PRESENT' : 'MISSING'
+  })
+
+  // Body is safe to log here because ExpressReceiver already parsed it
+  if (req.body) {
+    console.log('BODY:', JSON.stringify(req.body, null, 2))
+  } else {
+    console.log('BODY: <empty>')
+  }
+
+  next()
+})
+
+
 // ─────────────────────────────────────────────
 // Slack Bolt App
 // ─────────────────────────────────────────────
