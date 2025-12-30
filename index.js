@@ -1,6 +1,7 @@
 import pkg from '@slack/bolt';
 import dotenv from 'dotenv';
 import express from 'express';
+import bodyParser from 'body-parser';
 import { supabase } from './supabase.js';
 import { handleHome } from './home.js';
 
@@ -31,6 +32,10 @@ const app = new App({
   processBeforeResponse: true,
 });
 
+// Ensure correct parsing middleware
+receiver.app.use(bodyParser.urlencoded({ extended: true }));
+receiver.app.use(bodyParser.json());
+
 // Middleware: Log requests
 receiver.app.use((req, res, next) => {
   console.log('➡️ Slack request', {
@@ -44,11 +49,17 @@ receiver.app.use((req, res, next) => {
 
 // Slash command: /todo
 app.command('/todo', async ({ command, ack, say, client }) => {
-  await ack();
-  const text = command.text.trim();
-  const subcommand = text.split(' ')[0] || '';
+  try {
+    await ack(); // Acknowledge the request immediately
+  } catch (error) {
+    console.error('Acknowledgment error:', error);
+    return; // Prevent further execution if ack fails
+  }
 
   try {
+    const text = command.text.trim();
+    const subcommand = text.split(' ')[0] || '';
+
     console.log(`📥 Received command: /todo ${subcommand}`);
     switch (subcommand) {
       case 'add': {
@@ -140,7 +151,7 @@ app.command('/todo', async ({ command, ack, say, client }) => {
       }
     }
   } catch (err) {
-    console.error('🔥 Error handling /todo:', err);
+    console.error('🔥 Error handling /todo command:', err);
     await say('❌ An internal error occurred.');
   }
 });
@@ -159,6 +170,10 @@ const server = express();
 server.use('/slack/events', receiver.app);
 const PORT = process.env.PORT || 3000;
 
-server.listen(PORT, () => {
-  console.log(`⚡ Slack Todo app is running on port ${PORT}`);
+server.listen(PORT, (err) => {
+  if (err) {
+    console.error('Failed to start server:', err);
+  } else {
+    console.log(`⚡ Slack Todo app is running on port ${PORT}`);
+  }
 });
