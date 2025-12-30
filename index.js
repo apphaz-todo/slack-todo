@@ -73,9 +73,9 @@ const REMINDER_VALUE_SET = new Set(REMINDER_OPTIONS.map(o => o.value));
    DM NOTIFICATIONS
 ===================================================== */
 async function notifyUser({ client, userId, task, type, actor }) {
-  if (!userId) return;
+  if (!userId || userId === actor) return;
 
-  console.log(`📩 Notifying ${userId} | type=${type}`);
+  console.log(`📩 Notifying ${userId} | ${type}`);
 
   const blocks = [
     {
@@ -225,15 +225,107 @@ const utilBtn = (text, value) => ({
 });
 
 /* =====================================================
-   EVENTS
+   MODALS (RESTORED)
+===================================================== */
+async function openTaskModal(client, triggerId, callback, task = {}) {
+  const safeReminders = (task.reminders || []).filter(v => REMINDER_VALUE_SET.has(v));
+
+  await client.views.open({
+    trigger_id: triggerId,
+    view: {
+      type: 'modal',
+      callback_id: callback,
+      title: { type: 'plain_text', text: task.id ? 'Edit task' : 'New task' },
+      submit: { type: 'plain_text', text: 'Submit' },
+      close: { type: 'plain_text', text: 'Cancel' },
+      private_metadata: task.id || '',
+      blocks: [
+        inputText('Task name', 'title', task.title),
+        inputDate('Due date', 'due_date', toSlackDate(task.due_date)),
+        inputUser('Assignee', 'assigned_to', task.assigned_to),
+        inputChannel('Project (optional)', 'project', task.project),
+        inputReminder('Reminders', 'reminders', safeReminders),
+        inputWatchers('Watchers', 'watchers', task.watchers),
+        inputNotes('Notes', 'note', task.note),
+      ],
+    },
+  });
+}
+
+/* =====================================================
+   VIEW SUBMISSIONS (ACK SAFE)
+===================================================== */
+app.view('create_task', async ({ ack, body, view, client }) => {
+  await ack();
+
+  setImmediate(async () => {
+    const v = view.state.values;
+
+    const task = {
+      title: v.title.value.value,
+      due_date: v.due_date.value.selected_date,
+      assigned_to: v.assigned_to.value.selected_user,
+      project: v.project?.value?.selected_channel || null,
+      reminders: v.reminders?.value?.selected_options?.map(o => o.value) || [],
+      watchers: v.watchers?.value?.selected_users || [],
+      note: v.note?.value?.value || null,
+      created_by: body.user.id,
+      status: 'open',
+    };
+
+    const { data: [created] } = await supabase.from('tasks').insert(task).select();
+
+    await notifyUser({ client, userId: created.assigned_to, task: created, type: 'assignee', actor: body.user.id });
+
+    for (const w of created.watchers || []) {
+      await notifyUser({ client, userId: w, task: created, type: 'watcher', actor: body.user.id });
+    }
+
+    await publishHome(body.user.id, client);
+  });
+});
+
+app.view('edit_task', async ({ ack, body, view, client }) => {
+  await ack();
+
+  setImmediate(async () => {
+    const id = view.private_metadata;
+    const v = view.state.values;
+
+    const { data: old } = await supabase.from('tasks').select('*').eq('id', id).single();
+
+    const updated = {
+      title: v.title.value.value,
+      due_date: v.due_date.value.selected_date,
+      assigned_to: v.assigned_to.value.selected_user,
+      project: v.project?.value?.selected_channel || null,
+      reminders: v.reminders?.value?.selected_options?.map(o => o.value) || [],
+      watchers: v.watchers?.value?.selected_users || [],
+      note: v.note?.value?.value || null,
+    };
+
+    const { data: [task] } = await supabase.from('tasks').update(updated).eq('id', id).select();
+
+    if (old.assigned_to !== task.assigned_to) {
+      await notifyUser({ client, userId: task.assigned_to, task, type: 'assignee', actor: body.user.id });
+    }
+
+    const addedWatchers = (task.watchers || []).filter(w => !old.watchers?.includes(w));
+    for (const w of addedWatchers) {
+      await notifyUser({ client, userId: w, task, type: 'watcher', actor: body.user.id });
+    }
+
+    await publishHome(body.user.id, client);
+  });
+});
+
+/* =====================================================
+   ACTIONS + COMMANDS (ACK SAFE)
 ===================================================== */
 app.event('app_home_opened', async ({ event, client }) => {
   await publishHome(event.user, client);
 });
 
-/* =====================================================
-   ACTIONS (ACK SAFE)
-===================================================== */
 app.action(/^home_tab_/, async ({ body, ack, client }) => {
   await ack();
   setImmediate(() => publishHome(body.user.id, client, body.actions[0].action_id.replace('home_tab_', '')));
@@ -265,28 +357,88 @@ app.action('task_view', async ({ body, ack, client }) => {
         blocks: [
           { type: 'section', text: { type: 'mrkdwn', text: `*${t.title}*` } },
           t.note && { type: 'section', text: { type: 'mrkdwn', text: t.note } },
-          {
-            type: 'context',
-            elements: [{ type: 'mrkdwn', text: `👤 <@${t.assigned_to}> | 📅 ${formatDate(t.due_date)}` }],
-          },
+          { type: 'context', elements: [{ type: 'mrkdwn', text: `👤 <@${t.assigned_to}> | 📅 ${formatDate(t.due_date)}` }] },
         ].filter(Boolean),
       },
     });
   });
 });
 
-/* =====================================================
-   /todo COMMAND
-===================================================== */
+app.action('task_edit', async ({ body, ack, client }) => {
+  await ack();
+  setImmediate(async () => {
+    const { data: t } = await supabase.from('tasks').select('*').eq('id', body.actions[0].value).single();
+    await openTaskModal(client, body.trigger_id, 'edit_task', t);
+  });
+});
+
 app.command('/todo', async ({ command, ack, client }) => {
   await ack();
   setImmediate(() => {
-    if (command.text.trim() === 'list') {
-      publishHome(command.user_id, client);
-    } else {
-      openTaskModal(client, command.trigger_id, 'create_task');
-    }
+    if (command.text.trim() === 'list') publishHome(command.user_id, client);
+    else openTaskModal(client, command.trigger_id, 'create_task');
   });
+});
+
+/* =====================================================
+   INPUT BUILDERS
+===================================================== */
+const inputText = (label, id, val) => ({
+  type: 'input',
+  block_id: id,
+  label: { type: 'plain_text', text: label },
+  element: { type: 'plain_text_input', action_id: 'value', initial_value: val || '' },
+});
+
+const inputNotes = (label, id, val) => ({
+  type: 'input',
+  block_id: id,
+  optional: true,
+  label: { type: 'plain_text', text: label },
+  element: { type: 'plain_text_input', action_id: 'value', multiline: true, initial_value: val || '' },
+});
+
+const inputDate = (label, id, val) => ({
+  type: 'input',
+  block_id: id,
+  label: { type: 'plain_text', text: label },
+  element: { type: 'datepicker', action_id: 'value', ...(val ? { initial_date: val } : {}) },
+});
+
+const inputUser = (label, id, val) => ({
+  type: 'input',
+  block_id: id,
+  label: { type: 'plain_text', text: label },
+  element: { type: 'users_select', action_id: 'value', ...(val ? { initial_user: val } : {}) },
+});
+
+const inputChannel = (label, id, val) => ({
+  type: 'input',
+  block_id: id,
+  optional: true,
+  label: { type: 'plain_text', text: label },
+  element: { type: 'channels_select', action_id: 'value', ...(isValidChannel(val) ? { initial_channel: val } : {}) },
+});
+
+const inputReminder = (label, id, vals) => ({
+  type: 'input',
+  block_id: id,
+  optional: true,
+  label: { type: 'plain_text', text: label },
+  element: {
+    type: 'multi_static_select',
+    action_id: 'value',
+    options: REMINDER_OPTIONS,
+    ...(vals?.length ? { initial_options: vals.map(v => REMINDER_OPTIONS.find(o => o.value === v)) } : {}),
+  },
+});
+
+const inputWatchers = (label, id, vals) => ({
+  type: 'input',
+  block_id: id,
+  optional: true,
+  label: { type: 'plain_text', text: label },
+  element: { type: 'multi_users_select', action_id: 'value', ...(vals ? { initial_users: vals } : {}) },
 });
 
 /* =====================================================
@@ -294,5 +446,5 @@ app.command('/todo', async ({ command, ack, client }) => {
 ===================================================== */
 (async () => {
   await app.start();
-  console.log('🚀 Slack Todo app running (ACK SAFE)');
+  console.log('🚀 Slack Todo app running (RESTORED & ACK SAFE)');
 })();
