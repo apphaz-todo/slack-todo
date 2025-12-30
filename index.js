@@ -45,7 +45,18 @@ function formatDate(dateStr) {
   });
 }
 
-/* ---------- REMINDERS ---------- */
+function toSlackDate(dateStr) {
+  if (!dateStr) return undefined;
+  return new Date(dateStr).toISOString().split('T')[0]; // YYYY-MM-DD
+}
+
+function isValidChannel(id) {
+  return typeof id === 'string' && id.startsWith('C');
+}
+
+/* =====================================================
+   REMINDERS
+===================================================== */
 const REMINDER_OPTIONS = [
   ['🌅 Beginning of Day', 'bod'],
   ['🍱 After Lunch', 'after_lunch'],
@@ -56,9 +67,7 @@ const REMINDER_OPTIONS = [
   value,
 }));
 
-const REMINDER_VALUE_SET = new Set(
-  REMINDER_OPTIONS.map(o => o.value)
-);
+const REMINDER_VALUE_SET = new Set(REMINDER_OPTIONS.map(o => o.value));
 
 /* =====================================================
    HOME TAB
@@ -136,7 +145,6 @@ async function publishHome(userId, client, tab = 'home') {
   blocks.push({
     type: 'actions',
     elements: [
-      utilBtn('🔍 Search', 'search'),
       utilBtn('🆕 New task', 'new'),
     ],
   });
@@ -217,15 +225,8 @@ app.action('task_edit', async ({ body, ack, client }) => {
 app.command('/todo', async ({ command, ack, client }) => {
   await ack();
   const text = command.text.trim();
-
-  if (text === 'list') {
-    await publishHome(command.user_id, client);
-    return;
-  }
-  if (text === '' || text === 'add') {
-    await openTaskModal(client, command.trigger_id, 'create_task');
-    return;
-  }
+  if (text === 'list') return publishHome(command.user_id, client);
+  if (text === '' || text === 'add') return openTaskModal(client, command.trigger_id, 'create_task');
 });
 
 /* =====================================================
@@ -245,9 +246,11 @@ async function openTaskModal(client, triggerId, callback, task = {}) {
       private_metadata: task.id || '',
       blocks: [
         textInput('Task', 'title', task.title),
-        dateInput('Due date', 'due_date', task.due_date),
+        dateInput('Due date', 'due_date', toSlackDate(task.due_date)),
         userInput('Assignee', 'assigned_to', task.assigned_to),
-        channelInput('Project (optional)', 'project', task.project),
+        ...(isValidChannel(task.project)
+          ? [channelInput('Project (optional)', 'project', task.project)]
+          : [channelInput('Project (optional)', 'project')]),
         reminderInput('Reminders', 'reminders', safeReminders),
         watchersInput('Watchers', 'watchers', task.watchers),
         textArea('Notes', 'note', task.note),
@@ -318,14 +321,14 @@ const dateInput = (label, id, val) => ({
   type: 'input',
   block_id: id,
   label: { type: 'plain_text', text: label },
-  element: { type: 'datepicker', action_id: 'value', initial_date: val || undefined },
+  element: { type: 'datepicker', action_id: 'value', ...(val ? { initial_date: val } : {}) },
 });
 
 const userInput = (label, id, val) => ({
   type: 'input',
   block_id: id,
   label: { type: 'plain_text', text: label },
-  element: { type: 'users_select', action_id: 'value', initial_user: val },
+  element: { type: 'users_select', action_id: 'value', ...(val ? { initial_user: val } : {}) },
 });
 
 const channelInput = (label, id, val) => ({
@@ -333,7 +336,7 @@ const channelInput = (label, id, val) => ({
   block_id: id,
   optional: true,
   label: { type: 'plain_text', text: label },
-  element: { type: 'channels_select', action_id: 'value', initial_channel: val },
+  element: { type: 'channels_select', action_id: 'value', ...(val ? { initial_channel: val } : {}) },
 });
 
 const reminderInput = (label, id, vals) => ({
@@ -356,7 +359,7 @@ const watchersInput = (label, id, vals) => ({
   block_id: id,
   optional: true,
   label: { type: 'plain_text', text: label },
-  element: { type: 'multi_users_select', action_id: 'value', initial_users: vals || [] },
+  element: { type: 'multi_users_select', action_id: 'value', ...(vals ? { initial_users: vals } : {}) },
 });
 
 /* =====================================================
