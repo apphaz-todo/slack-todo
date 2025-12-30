@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import pkg from '@slack/bolt';
 import { createClient } from '@supabase/supabase-js';
+import cron from 'node-cron';
 
 const { App } = pkg;
 
@@ -69,7 +70,7 @@ async function publishHome(userId, client) {
 
   if (openTasks.length) {
     openTasks.forEach(task => {
-      const roleLabel =
+      const role =
         task.created_by === userId ? '🧑‍💼 Owner' : '👤 Assigned';
 
       blocks.push(
@@ -77,7 +78,7 @@ async function publishHome(userId, client) {
           type: 'section',
           text: {
             type: 'mrkdwn',
-            text: `*${task.title}*\n_${roleLabel}_`,
+            text: `*${task.title}*\n_${role}_`,
           },
           accessory: {
             type: 'button',
@@ -136,10 +137,7 @@ async function publishHome(userId, client) {
 
   await client.views.publish({
     user_id: userId,
-    view: {
-      type: 'home',
-      blocks,
-    },
+    view: { type: 'home', blocks },
   });
 }
 
@@ -151,111 +149,86 @@ app.event('app_home_opened', async ({ event, client }) => {
 });
 
 /* -----------------------------
-   SLASH COMMAND (/todo)
+   SLASH COMMAND → MODAL
 ------------------------------ */
-app.command('/todo', async ({ command, ack, client, respond }) => {
+app.command('/todo', async ({ command, ack, client }) => {
   await ack();
-  const text = command.text.trim();
 
-  // /todo assign @user task
-  if (text.startsWith('assign')) {
-    const match = text.match(/assign\s+<@(\w+)>\s+(.+)/);
-    if (!match) {
-      await respond('❌ `/todo assign @user task`');
-      return;
-    }
-
-    const [, assignee, task] = match;
-
-    await supabase.from('tasks').insert({
-      title: task,
-      created_by: command.user_id, // 👈 OWNER
-      assigned_to: assignee,       // 👈 ASSIGNEE
-      status: 'open',
-    });
-
-    await respond(`✅ Task assigned to <@${assignee}>`);
-    return;
-  }
-
-  // Default → open modal
   await client.views.open({
     trigger_id: command.trigger_id,
     view: {
       type: 'modal',
-      callback_id: 'add_task_modal',
-      title: { type: 'plain_text', text: 'Add Task' },
-      submit: { type: 'plain_text', text: 'Add' },
+      callback_id: 'new_task_modal',
+      title: { type: 'plain_text', text: 'New task' },
+      submit: { type: 'plain_text', text: 'Submit' },
       close: { type: 'plain_text', text: 'Cancel' },
       blocks: [
         {
           type: 'input',
-          block_id: 'task_input',
-          label: { type: 'plain_text', text: 'Task description' },
-          element: {
-            type: 'plain_text_input',
-            action_id: 'task_value',
-            placeholder: {
-              type: 'plain_text',
-              text: 'What do you need to do?',
-            },
-          },
-        },
-      ],
-    },
-  });
-});
-
-/* -----------------------------
-   ADD TASK MODAL SUBMIT
------------------------------- */
-app.view('add_task_modal', async ({ ack, body, view, client }) => {
-  await ack();
-
-  const task =
-    view.state.values.task_input.task_value.value;
-
-  await supabase.from('tasks').insert({
-    title: task,
-    created_by: body.user.id,   // 👈 OWNER
-    assigned_to: body.user.id,  // 👈 DEFAULT ASSIGNEE
-    status: 'open',
-  });
-
-  await publishHome(body.user.id, client);
-});
-
-/* -----------------------------
-   EDIT TASK
------------------------------- */
-app.action('task_edit', async ({ body, ack, client }) => {
-  await ack();
-
-  const taskId = body.actions[0].value;
-
-  const { data } = await supabase
-    .from('tasks')
-    .select('title')
-    .eq('id', taskId)
-    .single();
-
-  await client.views.open({
-    trigger_id: body.trigger_id,
-    view: {
-      type: 'modal',
-      callback_id: 'edit_task_modal',
-      private_metadata: taskId,
-      title: { type: 'plain_text', text: 'Edit Task' },
-      submit: { type: 'plain_text', text: 'Save' },
-      blocks: [
-        {
-          type: 'input',
-          block_id: 'edit_input',
+          block_id: 'task_block',
           label: { type: 'plain_text', text: 'Task' },
           element: {
             type: 'plain_text_input',
-            action_id: 'value',
-            initial_value: data.title,
+            action_id: 'task_value',
+            placeholder: { type: 'plain_text', text: 'To be done' },
+          },
+        },
+        {
+          type: 'input',
+          block_id: 'due_date_block',
+          optional: true,
+          label: { type: 'plain_text', text: 'Due date' },
+          element: { type: 'datepicker', action_id: 'due_date' },
+        },
+        {
+          type: 'input',
+          block_id: 'reminder_preset_block',
+          optional: true,
+          label: { type: 'plain_text', text: 'Reminder' },
+          element: {
+            type: 'static_select',
+            action_id: 'preset',
+            options: [
+              { text: { type: 'plain_text', text: 'Beginning of Day (9 AM)' }, value: 'bod' },
+              { text: { type: 'plain_text', text: 'After Lunch (2 PM)' }, value: 'after_lunch' },
+              { text: { type: 'plain_text', text: 'End of Day (5 PM)' }, value: 'eod' },
+              { text: { type: 'plain_text', text: 'Custom date & time' }, value: 'custom' },
+            ],
+          },
+        },
+        {
+          type: 'input',
+          block_id: 'custom_date_block',
+          optional: true,
+          label: { type: 'plain_text', text: 'Custom reminder date' },
+          element: { type: 'datepicker', action_id: 'date' },
+        },
+        {
+          type: 'input',
+          block_id: 'custom_time_block',
+          optional: true,
+          label: { type: 'plain_text', text: 'Custom reminder time' },
+          element: { type: 'timepicker', action_id: 'time' },
+        },
+        {
+          type: 'input',
+          block_id: 'watchers_block',
+          optional: true,
+          label: { type: 'plain_text', text: 'Watchers' },
+          element: {
+            type: 'multi_users_select',
+            action_id: 'watchers',
+          },
+        },
+        {
+          type: 'input',
+          block_id: 'note_block',
+          optional: true,
+          label: { type: 'plain_text', text: 'Note' },
+          element: {
+            type: 'plain_text_input',
+            action_id: 'note',
+            multiline: true,
           },
         },
       ],
@@ -263,19 +236,48 @@ app.action('task_edit', async ({ body, ack, client }) => {
   });
 });
 
-app.view('edit_task_modal', async ({ ack, body, view, client }) => {
+/* -----------------------------
+   MODAL SUBMIT
+------------------------------ */
+app.view('new_task_modal', async ({ ack, body, view, client }) => {
   await ack();
 
-  const taskId = view.private_metadata;
-  const newText =
-    view.state.values.edit_input.value.value;
+  const userId = body.user.id;
 
-  await supabase
-    .from('tasks')
-    .update({ title: newText })
-    .eq('id', taskId);
+  const task = view.state.values.task_block.task_value.value;
+  const dueDate = view.state.values.due_date_block?.due_date?.selected_date || null;
+  const preset = view.state.values.reminder_preset_block?.preset?.selected_option?.value;
+  const cDate = view.state.values.custom_date_block?.date?.selected_date;
+  const cTime = view.state.values.custom_time_block?.time?.selected_time;
+  const watchers = view.state.values.watchers_block?.watchers?.selected_users || [];
+  const note = view.state.values.note_block?.note?.value || null;
 
-  await publishHome(body.user.id, client);
+  let reminderAt = null;
+
+  if (preset && dueDate && preset !== 'custom') {
+    const d = new Date(dueDate);
+    if (preset === 'bod') d.setHours(9, 0, 0);
+    if (preset === 'after_lunch') d.setHours(14, 0, 0);
+    if (preset === 'eod') d.setHours(17, 0, 0);
+    reminderAt = d.toISOString();
+  }
+
+  if (preset === 'custom' && cDate && cTime) {
+    reminderAt = `${cDate}T${cTime}:00`;
+  }
+
+  await supabase.from('tasks').insert({
+    title: task,
+    created_by: userId,
+    assigned_to: userId,
+    status: 'open',
+    due_date: dueDate,
+    reminder_at: reminderAt,
+    watchers,
+    note,
+  });
+
+  await publishHome(userId, client);
 });
 
 /* -----------------------------
@@ -284,23 +286,55 @@ app.view('edit_task_modal', async ({ ack, body, view, client }) => {
 app.action('task_done', async ({ body, ack, client }) => {
   await ack();
 
-  await supabase
+  const taskId = body.actions[0].value;
+
+  const { data: task } = await supabase
     .from('tasks')
     .update({ status: 'done' })
-    .eq('id', body.actions[0].value);
+    .eq('id', taskId)
+    .select('title,watchers')
+    .single();
+
+  for (const w of task.watchers || []) {
+    await client.chat.postMessage({
+      channel: w,
+      text: `✅ Task completed: *${task.title}*`,
+    });
+  }
 
   await publishHome(body.user.id, client);
 });
 
 app.action('task_delete', async ({ body, ack, client }) => {
   await ack();
-
-  await supabase
-    .from('tasks')
-    .delete()
-    .eq('id', body.actions[0].value);
-
+  await supabase.from('tasks').delete().eq('id', body.actions[0].value);
   await publishHome(body.user.id, client);
+});
+
+/* -----------------------------
+   REMINDER CRON (EVERY MINUTE)
+------------------------------ */
+cron.schedule('* * * * *', async () => {
+  const now = new Date().toISOString();
+
+  const { data: tasks } = await supabase
+    .from('tasks')
+    .select('id,title,assigned_to,watchers')
+    .lte('reminder_at', now)
+    .eq('status', 'open');
+
+  for (const task of tasks || []) {
+    const users = new Set([task.assigned_to, ...(task.watchers || [])]);
+
+    for (const u of users) {
+      await app.client.chat.postMessage({
+        channel: u,
+        text: `⏰ Reminder: *${task.title}*`,
+      });
+    }
+
+    await supabase.from('tasks').update({ reminder_at: null }).eq('id', task.id);
+  }
 });
 
 /* -----------------------------
