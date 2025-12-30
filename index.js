@@ -62,18 +62,14 @@ app.command('/todo', async ({ command, ack, say }) => {
 app.event('app_home_opened', handleHome)
 
 // ─────────────────────────────────────────────
-// Express Server (IMPORTANT ORDER)
+// Express Server (CORRECT ORDER)
 // ─────────────────────────────────────────────
 const server = express()
 
-// ✅ REQUIRED for Slack slash commands
-server.use(express.urlencoded({ extended: true }))
+// ⚠️ DO NOT add body parsers before Bolt
 
-// ✅ REQUIRED for Slack events & verification
-server.use(express.json())
-
-// URL verification
-server.post('/slack/events', (req, res, next) => {
+// Slack URL verification (handled BEFORE Bolt)
+server.post('/slack/events', express.json(), (req, res, next) => {
   if (req.body?.type === 'url_verification') {
     console.log('🧩 Slack URL verification challenge received')
     return res.json({ challenge: req.body.challenge })
@@ -81,7 +77,7 @@ server.post('/slack/events', (req, res, next) => {
   next()
 })
 
-// Pass to Bolt
+// ✅ Pass ALL Slack traffic to Bolt
 server.use('/slack/events', receiver.router)
 
 const PORT = process.env.PORT || 3000
