@@ -30,104 +30,181 @@ const supabase = createClient(
 );
 
 /* -----------------------------
-   DB Health Check
+   Helpers
 ------------------------------ */
-async function checkDBConnection() {
-  console.log('🔍 Checking Supabase connection...');
-
-  const { data, error } = await supabase
+async function publishHome(userId, client) {
+  const { data: tasks } = await supabase
     .from('tasks')
-    .select('id')
-    .limit(1);
+    .select('id,title,status')
+    .eq('assigned_to', userId)
+    .order('created_at', { ascending: false });
 
-  if (error) {
-    console.error('❌ Supabase connection FAILED');
-    console.error(error);
-    process.exit(1);
-  }
+  const openTasks = tasks?.filter(t => t.status === 'open') || [];
+  const doneTasks = tasks?.filter(t => t.status === 'done') || [];
 
-  console.log('✅ Supabase connected');
+  await client.views.publish({
+    user_id: userId,
+    view: {
+      type: 'home',
+      blocks: [
+        {
+          type: 'header',
+          text: { type: 'plain_text', text: '📝 Your Tasks' },
+        },
+
+        ...(openTasks.length
+          ? openTasks.flatMap(task => [
+              {
+                type: 'section',
+                text: {
+                  type: 'mrkdwn',
+                  text: `• *${task.title}*`,
+                },
+                accessory: {
+                  type: 'button',
+                  text: { type: 'plain_text', text: '✅ Done' },
+                  action_id: 'task_done',
+                  value: task.id,
+                },
+              },
+              {
+                type: 'context',
+                elements: [
+                  {
+                    type: 'button',
+                    text: { type: 'plain_text', text: '🗑️ Delete' },
+                    action_id: 'task_delete',
+                    value: task.id,
+                  },
+                ],
+              },
+            ])
+          : [
+              {
+                type: 'section',
+                text: { type: 'mrkdwn', text: '📭 No open tasks' },
+              },
+            ]),
+
+        { type: 'divider' },
+
+        {
+          type: 'header',
+          text: { type: 'plain_text', text: '✅ Completed' },
+        },
+
+        ...(doneTasks.length
+          ? doneTasks.map(task => ({
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: `✔️ ${task.title}`,
+              },
+            }))
+          : [
+              {
+                type: 'section',
+                text: { type: 'mrkdwn', text: '— None yet —' },
+              },
+            ]),
+      ],
+    },
+  });
 }
 
 /* -----------------------------
-   /todo Command
+   App Home Opened
 ------------------------------ */
-app.command('/todo', async ({ command, ack, respond, logger }) => {
+app.event('app_home_opened', async ({ event, client }) => {
+  console.log('🏠 Home opened:', event.user);
+  await publishHome(event.user, client);
+});
+
+/* -----------------------------
+   Button Actions
+------------------------------ */
+app.action('task_done', async ({ body, ack, client }) => {
+  await ack();
+
+  await supabase
+    .from('tasks')
+    .update({ status: 'done' })
+    .eq('id', body.actions[0].value);
+
+  await publishHome(body.user.id, client);
+});
+
+app.action('task_delete', async ({ body, ack, client }) => {
+  await ack();
+
+  await supabase
+    .from('tasks')
+    .delete()
+    .eq('id', body.actions[0].value);
+
+  await publishHome(body.user.id, client);
+});
+
+/* -----------------------------
+   Slash Command
+------------------------------ */
+app.command('/todo', async ({ command, ack, respond, client }) => {
   await ack();
 
   const [sub, ...rest] = command.text.trim().split(' ');
   const text = rest.join(' ');
 
-  try {
-    switch (sub) {
-      case 'add': {
-        if (!text) {
-          await respond('❌ `/todo add <task>`');
-          return;
-        }
-
-        console.log('➕ Inserting task:', text);
-
-        const { data, error } = await supabase
-          .from('tasks')
-          .insert({
-            title: text,
-            assigned_to: command.user_id,
-            status: 'open',
-          })
-          .select();
-
-        if (error) {
-          console.error('❌ Insert failed');
-          console.error(error);
-          await respond(`❌ DB Error: ${error.message}`);
-          return;
-        }
-
-        console.log('✅ Insert success:', data);
-        await respond(`✅ Task added: *${text}*`);
-        break;
+  switch (sub) {
+    case 'add': {
+      if (!text) {
+        await respond('❌ `/todo add <task>`');
+        return;
       }
 
-      case 'list': {
-        const { data, error } = await supabase
-          .from('tasks')
-          .select('id,title')
-          .eq('assigned_to', command.user_id)
-          .eq('status', 'open');
+      await supabase.from('tasks').insert({
+        title: text,
+        assigned_to: command.user_id,
+        status: 'open',
+      });
 
-        if (error) {
-          console.error(error);
-          await respond('❌ Failed to fetch tasks');
-          return;
-        }
-
-        if (!data.length) {
-          await respond('📭 No open tasks.');
-          return;
-        }
-
-        await respond(
-          '📝 Your tasks:\n' +
-            data.map(t => `• (${t.id}) ${t.title}`).join('\n')
-        );
-        break;
-      }
-
-      default:
-        await respond('❓ `/todo add | list | done`');
+      await respond(`✅ Task added: *${text}*`);
+      await publishHome(command.user_id, client);
+      break;
     }
-  } catch (e) {
-    logger.error(e);
-    await respond('❌ Unexpected error occurred');
+
+    case 'list': {
+      const { data } = await supabase
+        .from('tasks')
+        .select('id,title')
+        .eq('assigned_to', command.user_id)
+        .eq('status', 'open');
+
+      if (!data?.length) {
+        await respond('📭 No open tasks');
+        return;
+      }
+
+      await respond(
+        '📝 Your tasks:\n' +
+          data.map(t => `• (${t.id}) ${t.title}`).join('\n')
+      );
+      break;
+    }
+
+    case 'refresh':
+      await publishHome(command.user_id, client);
+      await respond('🔄 Home refreshed');
+      break;
+
+    default:
+      await respond('❓ `/todo add | list | refresh`');
   }
 });
 
 /* -----------------------------
-   Start Server
+   Start
 ------------------------------ */
 (async () => {
-  await checkDBConnection();
   await app.start();
   console.log('⚡ Slack Todo app running');
 })();
