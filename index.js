@@ -20,6 +20,12 @@ const validateEnvVars = () => {
 validateEnvVars();
 
 console.log('🚀 Slack Todo starting');
+console.log('Environment Check:', {
+  SLACK_BOT_TOKEN: !!process.env.SLACK_BOT_TOKEN,
+  SLACK_SIGNING_SECRET: !!process.env.SLACK_SIGNING_SECRET,
+  SUPABASE_URL: !!process.env.SUPABASE_URL,
+  SUPABASE_KEY: !!process.env.SUPABASE_ANON_KEY,
+});
 
 // Initialize Slack App
 const receiver = new ExpressReceiver({
@@ -43,24 +49,23 @@ receiver.app.use((req, res, next) => {
     url: req.originalUrl,
     contentType: req.headers['content-type'],
     hasSignature: !!req.headers['x-slack-signature'],
+    headers: req.headers,
+    body: req.body,
   });
   next();
 });
 
 // Slash command: /todo
 app.command('/todo', async ({ command, ack, say, client }) => {
+  console.log('📥 Handling /todo command with data:', JSON.stringify(command, null, 2));
   try {
-    await ack(); // Acknowledge the request immediately
-  } catch (error) {
-    console.error('Acknowledgment error:', error);
-    return; // Prevent further execution if ack fails
-  }
+    await ack(); // Acknowledge the request
+    console.log('✅ Acknowledged /todo command');
 
-  try {
     const text = command.text.trim();
     const subcommand = text.split(' ')[0] || '';
+    console.log(`📥 Subcommand: ${subcommand}`);
 
-    console.log(`📥 Received command: /todo ${subcommand}`);
     switch (subcommand) {
       case 'add': {
         const parts = text.replace(/^add\s*/, '').split(' ');
@@ -83,9 +88,11 @@ app.command('/todo', async ({ command, ack, say, client }) => {
           }
           return true;
         });
+        console.log('Add command parsed:', { watchers, due_at, recurring, words });
 
         const title = words.join(' ').trim();
         const assignedTo = watchers[0] || command.user_id;
+        console.log('Title and assigned user:', { title, assignedTo });
 
         const { data, error } = await supabase.from('tasks').insert({
           title,
@@ -97,20 +104,29 @@ app.command('/todo', async ({ command, ack, say, client }) => {
           channel_id: command.channel_id,
         }).select().single();
 
-        if (error) throw new Error(`Failed to add task: ${error.message}`);
+        if (error) {
+          console.error('❌ Error inserting task:', error);
+          throw new Error(`Failed to add task: ${error.message}`);
+        }
 
+        console.log('✅ Task added:', data);
         await say(`✅ Task added: *${title}* (ID: ${data.id})`);
         break;
       }
 
       case 'list': {
+        console.log('Fetching tasks for list command...');
         const { data, error } = await supabase.from('tasks')
           .select('*')
           .eq('assigned_to', command.user_id)
           .eq('status', 'open');
 
-        if (error) throw new Error(`Failed to list tasks: ${error.message}`);
+        if (error) {
+          console.error('❌ Error fetching tasks:', error);
+          throw new Error(`Failed to list tasks: ${error.message}`);
+        }
 
+        console.log('Tasks fetched:', data);
         if (!data || data.length === 0) {
           await say('🎉 No open tasks.');
         } else {
@@ -121,23 +137,36 @@ app.command('/todo', async ({ command, ack, say, client }) => {
 
       case 'done': {
         const taskId = text.replace(/^done\s*/, '').trim();
+        console.log('Marking task as done:', taskId);
+
         const { error } = await supabase.from('tasks')
           .update({ status: 'done' })
           .eq('id', taskId);
 
-        if (error) throw new Error(`Failed to complete task: ${error.message}`);
+        if (error) {
+          console.error('❌ Error updating task:', error);
+          throw new Error(`Failed to complete task: ${error.message}`);
+        }
+
+        console.log('✅ Task marked as done.');
         await say('✅ Task marked as done.');
         break;
       }
 
       case 'search': {
         const query = text.replace(/^search\s*/, '').trim();
+        console.log('Searching tasks with query:', query);
+
         const { data, error } = await supabase.from('tasks')
           .select('*')
           .ilike('title', `%${query}%`);
 
-        if (error) throw new Error(`Search failed: ${error.message}`);
+        if (error) {
+          console.error('❌ Search error:', error);
+          throw new Error(`Search failed: ${error.message}`);
+        }
 
+        console.log('Search results:', data);
         if (!data || data.length === 0) {
           await say('🔍 No matching tasks found.');
         } else {
@@ -148,6 +177,7 @@ app.command('/todo', async ({ command, ack, say, client }) => {
 
       default: {
         await say('❓ Unknown subcommand. Usage: `/todo add|list|done|search`.\nExample: `/todo add Finish documentation`');
+        console.log('Unknown subcommand received:', subcommand);
       }
     }
   } catch (err) {
@@ -158,6 +188,7 @@ app.command('/todo', async ({ command, ack, say, client }) => {
 
 // App Home handler
 app.event('app_home_opened', async ({ event, client }) => {
+  console.log('🏠 App Home opened event:', event);
   try {
     await handleHome({ user: event.user, client });
   } catch (error) {
