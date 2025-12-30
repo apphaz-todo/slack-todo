@@ -1,43 +1,21 @@
-import { createClient } from '@supabase/supabase-js'
+import { createClient } from '@supabase/supabase-js';
 
-// ─────────────────────────────────────────────
-// DEBUG: Supabase ENV sanity check
-// ─────────────────────────────────────────────
-console.log('🗄️ Initializing Supabase client')
-console.log('SUPABASE ENV CHECK:', {
-  hasUrl: !!process.env.SUPABASE_URL,
-  hasAnonKey: !!process.env.SUPABASE_ANON_KEY,
-  urlPreview: process.env.SUPABASE_URL
-    ? process.env.SUPABASE_URL.substring(0, 30) + '...'
-    : 'MISSING'
-})
+// Initialize Supabase client
+export const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY, {
+  auth: { persistSession: false },
+});
 
-export const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY,
-  {
-    auth: {
-      persistSession: false
-    }
-  }
-)
-
-// ─────────────────────────────────────────────
-// DEBUG HELPERS (OPTIONAL USE)
-// ─────────────────────────────────────────────
-export async function debugSupabaseConnection() {
-  console.log('🔎 Testing Supabase connection...')
-
-  const { data, error } = await supabase
+// Test Supabase connection
+export async function checkSupabaseConnection() {
+  const { error } = await supabase
     .from('tasks')
     .select('id')
-    .limit(1)
+    .limit(1);
 
   if (error) {
-    console.error('❌ Supabase connection FAILED:', error)
-    return false
+    console.error('❌ Supabase connection test failed:', error);
+    return false;
   }
-
-  console.log('✅ Supabase connection OK')
-  return true
+  console.log('✅ Supabase connection validated');
+  return true;
 }
