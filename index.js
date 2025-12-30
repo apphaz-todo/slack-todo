@@ -11,23 +11,20 @@ const { App, ExpressReceiver } = pkg
 console.log('🚀 Starting Slack Todo App')
 
 // ─────────────────────────────────────────────
-// Express Receiver
+// ExpressReceiver (Slack handles body + signature)
 // ─────────────────────────────────────────────
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET
 })
 
-// 🔍 SAFE request logger
+// ✅ SAFE logging (DO NOT touch body)
 receiver.router.use((req, res, next) => {
-  console.log('➡️ Incoming Slack request')
-  console.log('METHOD:', req.method)
-  console.log('ORIGINAL URL:', req.originalUrl)
-  console.log('ROUTER URL:', req.url)
-  console.log('HEADERS:', {
-    'content-type': req.headers['content-type'],
-    'x-slack-signature': req.headers['x-slack-signature'] ? 'PRESENT' : 'MISSING'
+  console.log('➡️ Slack request received', {
+    method: req.method,
+    originalUrl: req.originalUrl,
+    contentType: req.headers['content-type'],
+    hasSignature: !!req.headers['x-slack-signature']
   })
-  console.log('BODY:', req.body)
   next()
 })
 
@@ -41,7 +38,8 @@ const app = new App({
 
 // Slash command
 app.command('/todo', async ({ command, ack, say }) => {
-  console.log('📥 /todo command received:', command.text)
+  console.log('📥 /todo command fired:', command.text)
+
   await ack()
 
   if (command.text.startsWith('add')) {
@@ -55,6 +53,8 @@ app.command('/todo', async ({ command, ack, say }) => {
     })
 
     await say(`✅ Task added: *${title}*`)
+  } else {
+    await say('❓ Try `/todo add <task>`')
   }
 })
 
@@ -62,22 +62,11 @@ app.command('/todo', async ({ command, ack, say }) => {
 app.event('app_home_opened', handleHome)
 
 // ─────────────────────────────────────────────
-// Express Server (CORRECT ORDER)
+// Express Server (NO body parsers here)
 // ─────────────────────────────────────────────
 const server = express()
 
-// ⚠️ DO NOT add body parsers before Bolt
-
-// Slack URL verification (handled BEFORE Bolt)
-server.post('/slack/events', express.json(), (req, res, next) => {
-  if (req.body?.type === 'url_verification') {
-    console.log('🧩 Slack URL verification challenge received')
-    return res.json({ challenge: req.body.challenge })
-  }
-  next()
-})
-
-// ✅ Pass ALL Slack traffic to Bolt
+// ✅ Let Bolt handle EVERYTHING under this path
 server.use('/slack/events', receiver.router)
 
 const PORT = process.env.PORT || 3000
