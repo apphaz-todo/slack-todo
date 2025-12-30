@@ -120,10 +120,24 @@ async function publishHome(userId, client, tab = 'home') {
   for (const t of filtered) {
     blocks.push(
       { type: 'section', text: { type: 'mrkdwn', text: `🚩 *${t.title}*` } },
-      {
+  
+       {
         type: 'context',
-        elements: [{ type: 'mrkdwn', text: `📅 ${formatDate(t.due_date)}${t.note ? `\n📝 ${t.note}` : ''}` }],
+        elements: [{
+          type: 'mrkdwn',
+          text:
+             (t.note ? `\n📝 ${t.note}` : '') + 
+             `📅 ${formatDate(t.due_date)}` +
+            `\n👤 Assignee: <@${t.assigned_to}>` +
+            (t.watchers?.length
+              ? `\n👀 Watchers: ${t.watchers.map(u => `<@${u}>`).join(', ')}`
+              : '')       
+        }],
       },
+//       {
+//       type: 'context',
+//        elements: [{ type: 'mrkdwn', text: `📅 ${formatDate(t.due_date)}${t.note ? `\n📝 ${t.note}` : ''}` }],
+//      },
       {
         type: 'actions',
         elements: [
