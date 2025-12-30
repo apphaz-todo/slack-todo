@@ -8,12 +8,8 @@ const { App } = pkg;
    ENV CHECK
 ===================================================== */
 console.log('🔍 Checking environment variables...');
-[
-  'SLACK_BOT_TOKEN',
-  'SLACK_SIGNING_SECRET',
-  'SUPABASE_URL',
-  'SUPABASE_SERVICE_ROLE_KEY',
-].forEach(v => {
+['SLACK_BOT_TOKEN','SLACK_SIGNING_SECRET','SUPABASE_URL','SUPABASE_SERVICE_ROLE_KEY']
+.forEach(v => {
   if (!process.env[v]) {
     console.error(`❌ Missing ${v}`);
     throw new Error('Missing env vars');
@@ -49,6 +45,7 @@ function formatDate(dateStr) {
   });
 }
 
+/* ---------- REMINDERS ---------- */
 const REMINDER_OPTIONS = [
   ['🌅 Beginning of Day', 'bod'],
   ['🍱 After Lunch', 'after_lunch'],
@@ -59,6 +56,10 @@ const REMINDER_OPTIONS = [
   value,
 }));
 
+const REMINDER_VALUE_SET = new Set(
+  REMINDER_OPTIONS.map(o => o.value)
+);
+
 /* =====================================================
    HOME TAB
 ===================================================== */
@@ -68,9 +69,7 @@ async function publishHome(userId, client, tab = 'home') {
   const { data: tasks = [] } = await supabase
     .from('tasks')
     .select('*')
-    .or(
-      `assigned_to.eq.${userId},created_by.eq.${userId},watchers.cs.{${userId}}`
-    )
+    .or(`assigned_to.eq.${userId},created_by.eq.${userId},watchers.cs.{${userId}}`)
     .order('created_at', { ascending: true });
 
   const counts = {
@@ -83,25 +82,15 @@ async function publishHome(userId, client, tab = 'home') {
 
   let filtered;
   switch (tab) {
-    case 'assigned':
-      filtered = tasks.filter(t => t.assigned_to === userId && t.status === 'open');
-      break;
-    case 'completed':
-      filtered = tasks.filter(t => t.status === 'done');
-      break;
-    case 'archived':
-      filtered = tasks.filter(t => t.status === 'archived');
-      break;
-    case 'watching':
-      filtered = tasks.filter(t => t.watchers?.includes(userId));
-      break;
-    default:
-      filtered = tasks.filter(t => t.status === 'open');
+    case 'assigned': filtered = tasks.filter(t => t.assigned_to === userId && t.status === 'open'); break;
+    case 'completed': filtered = tasks.filter(t => t.status === 'done'); break;
+    case 'archived': filtered = tasks.filter(t => t.status === 'archived'); break;
+    case 'watching': filtered = tasks.filter(t => t.watchers?.includes(userId)); break;
+    default: filtered = tasks.filter(t => t.status === 'open');
   }
 
   const blocks = [];
 
-  /* Tabs */
   blocks.push({
     type: 'actions',
     elements: [
@@ -116,51 +105,28 @@ async function publishHome(userId, client, tab = 'home') {
   blocks.push({ type: 'divider' });
 
   if (!filtered.length) {
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: '📭 No tasks found' },
-    });
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: '📭 No tasks found' } });
   }
 
   for (const t of filtered) {
     blocks.push(
-      {
-        type: 'section',
-        text: { type: 'mrkdwn', text: `🚩 *${t.title}*` },
-      },
+      { type: 'section', text: { type: 'mrkdwn', text: `🚩 *${t.title}*` } },
       {
         type: 'context',
-        elements: [
-          {
-            type: 'mrkdwn',
-            text: `📅 ${formatDate(t.due_date)}${t.note ? `\n📝 ${t.note}` : ''}`,
-          },
-        ],
+        elements: [{ type: 'mrkdwn', text: `📅 ${formatDate(t.due_date)}${t.note ? `\n📝 ${t.note}` : ''}` }],
       },
       {
         type: 'actions',
         elements: [
-          ...(t.status === 'open'
-            ? [{
-                type: 'button',
-                text: { type: 'plain_text', text: 'Complete' },
-                style: 'primary',
-                action_id: 'task_complete',
-                value: t.id,
-              }]
-            : []),
-          {
+          ...(t.status === 'open' ? [{
             type: 'button',
-            text: { type: 'plain_text', text: 'View' },
-            action_id: 'task_view',
+            text: { type: 'plain_text', text: 'Complete' },
+            style: 'primary',
+            action_id: 'task_complete',
             value: t.id,
-          },
-          {
-            type: 'button',
-            text: { type: 'plain_text', text: 'Edit' },
-            action_id: 'task_edit',
-            value: t.id,
-          },
+          }] : []),
+          { type: 'button', text: { type: 'plain_text', text: 'View' }, action_id: 'task_view', value: t.id },
+          { type: 'button', text: { type: 'plain_text', text: 'Edit' }, action_id: 'task_edit', value: t.id },
         ],
       },
       { type: 'divider' }
@@ -175,11 +141,7 @@ async function publishHome(userId, client, tab = 'home') {
     ],
   });
 
-  await client.views.publish({
-    user_id: userId,
-    view: { type: 'home', blocks },
-  });
-
+  await client.views.publish({ user_id: userId, view: { type: 'home', blocks } });
   console.log('✅ Home published');
 }
 
@@ -197,7 +159,7 @@ const utilBtn = (text, value) => ({
 });
 
 /* =====================================================
-   EVENTS
+   EVENTS & ACTIONS
 ===================================================== */
 app.event('app_home_opened', async ({ event, client }) => {
   await publishHome(event.user, client);
@@ -209,17 +171,11 @@ app.action(/^home_tab_/, async ({ body, ack, client }) => {
   await publishHome(body.user.id, client, tab);
 });
 
-/* =====================================================
-   HOME BUTTONS
-===================================================== */
 app.action('util_new', async ({ body, ack, client }) => {
   await ack();
   await openTaskModal(client, body.trigger_id, 'create_task');
 });
 
-/* =====================================================
-   TASK ACTIONS
-===================================================== */
 app.action('task_complete', async ({ body, ack, client }) => {
   await ack();
   await supabase.from('tasks').update({ status: 'done' }).eq('id', body.actions[0].value);
@@ -241,10 +197,7 @@ app.action('task_view', async ({ body, ack, client }) => {
         t.note && { type: 'section', text: { type: 'mrkdwn', text: t.note } },
         {
           type: 'context',
-          elements: [{
-            type: 'mrkdwn',
-            text: `👤 <@${t.assigned_to}> | 📅 ${formatDate(t.due_date)} | #${t.project || '—'}`,
-          }],
+          elements: [{ type: 'mrkdwn', text: `👤 <@${t.assigned_to}> | 📅 ${formatDate(t.due_date)}` }],
         },
       ].filter(Boolean),
     },
@@ -254,11 +207,7 @@ app.action('task_view', async ({ body, ack, client }) => {
 app.action('task_edit', async ({ body, ack, client }) => {
   await ack();
   const { data: t } = await supabase.from('tasks').select('*').eq('id', body.actions[0].value).single();
-
-  if (t.created_by !== body.user.id) {
-    console.log('⛔ Edit blocked (not owner)');
-    return;
-  }
+  if (t.created_by !== body.user.id) return;
   await openTaskModal(client, body.trigger_id, 'edit_task', t);
 });
 
@@ -273,23 +222,18 @@ app.command('/todo', async ({ command, ack, client }) => {
     await publishHome(command.user_id, client);
     return;
   }
-
   if (text === '' || text === 'add') {
     await openTaskModal(client, command.trigger_id, 'create_task');
     return;
   }
-
-  await client.chat.postEphemeral({
-    channel: command.channel_id,
-    user: command.user_id,
-    text: 'Usage: `/todo`, `/todo add`, `/todo list`',
-  });
 });
 
 /* =====================================================
    MODALS
 ===================================================== */
 async function openTaskModal(client, triggerId, callback, task = {}) {
+  const safeReminders = (task.reminders || []).filter(v => REMINDER_VALUE_SET.has(v));
+
   await client.views.open({
     trigger_id: triggerId,
     view: {
@@ -304,7 +248,7 @@ async function openTaskModal(client, triggerId, callback, task = {}) {
         dateInput('Due date', 'due_date', task.due_date),
         userInput('Assignee', 'assigned_to', task.assigned_to),
         channelInput('Project (optional)', 'project', task.project),
-        reminderInput('Reminders', 'reminders', task.reminders),
+        reminderInput('Reminders', 'reminders', safeReminders),
         watchersInput('Watchers', 'watchers', task.watchers),
         textArea('Notes', 'note', task.note),
       ],
@@ -401,7 +345,9 @@ const reminderInput = (label, id, vals) => ({
     type: 'multi_static_select',
     action_id: 'value',
     options: REMINDER_OPTIONS,
-    initial_options: (vals || []).map(v => REMINDER_OPTIONS.find(o => o.value === v)),
+    ...(vals?.length
+      ? { initial_options: vals.map(v => REMINDER_OPTIONS.find(o => o.value === v)) }
+      : {}),
   },
 });
 
