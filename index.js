@@ -204,9 +204,7 @@ async function publishHome(userId, client, tab = 'home') {
 
   blocks.push({
     type: 'actions',
-    elements: [
-      utilBtn('🆕 New task', 'new'),
-    ],
+    elements: [ utilBtn('🆕 New task', 'new') ],
   });
 
   await client.views.publish({ user_id: userId, view: { type: 'home', blocks } });
@@ -227,17 +225,74 @@ const utilBtn = (text, value) => ({
 });
 
 /* =====================================================
-   EVENTS / ACTIONS / COMMANDS / MODALS
-   (UNCHANGED FROM LAST WORKING VERSION)
+   EVENTS
 ===================================================== */
-// Everything below remains unchanged and continues to work
-// including create_task, edit_task, task_view, task_complete,
-// openTaskModal, /todo commands, etc.
+app.event('app_home_opened', async ({ event, client }) => {
+  await publishHome(event.user, client);
+});
+
+/* =====================================================
+   ACTIONS (ACK SAFE)
+===================================================== */
+app.action(/^home_tab_/, async ({ body, ack, client }) => {
+  await ack();
+  setImmediate(() => publishHome(body.user.id, client, body.actions[0].action_id.replace('home_tab_', '')));
+});
+
+app.action('util_new', async ({ body, ack, client }) => {
+  await ack();
+  setImmediate(() => openTaskModal(client, body.trigger_id, 'create_task'));
+});
+
+app.action('task_complete', async ({ body, ack, client }) => {
+  await ack();
+  setImmediate(async () => {
+    await supabase.from('tasks').update({ status: 'done' }).eq('id', body.actions[0].value);
+    await publishHome(body.user.id, client);
+  });
+});
+
+app.action('task_view', async ({ body, ack, client }) => {
+  await ack();
+  setImmediate(async () => {
+    const { data: t } = await supabase.from('tasks').select('*').eq('id', body.actions[0].value).single();
+    await client.views.open({
+      trigger_id: body.trigger_id,
+      view: {
+        type: 'modal',
+        title: { type: 'plain_text', text: 'Todo' },
+        close: { type: 'plain_text', text: 'Close' },
+        blocks: [
+          { type: 'section', text: { type: 'mrkdwn', text: `*${t.title}*` } },
+          t.note && { type: 'section', text: { type: 'mrkdwn', text: t.note } },
+          {
+            type: 'context',
+            elements: [{ type: 'mrkdwn', text: `👤 <@${t.assigned_to}> | 📅 ${formatDate(t.due_date)}` }],
+          },
+        ].filter(Boolean),
+      },
+    });
+  });
+});
+
+/* =====================================================
+   /todo COMMAND
+===================================================== */
+app.command('/todo', async ({ command, ack, client }) => {
+  await ack();
+  setImmediate(() => {
+    if (command.text.trim() === 'list') {
+      publishHome(command.user_id, client);
+    } else {
+      openTaskModal(client, command.trigger_id, 'create_task');
+    }
+  });
+});
 
 /* =====================================================
    START
 ===================================================== */
 (async () => {
   await app.start();
-  console.log('🚀 Slack Todo app running');
+  console.log('🚀 Slack Todo app running (ACK SAFE)');
 })();
