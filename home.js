@@ -1,49 +1,57 @@
-import { supabase } from './supabase.js'
+import { supabase } from './supabase.js';
 
 export async function handleHome({ event, client }) {
-  const user = event.user
+  const user = event.user;
 
-  const { data: assigned } = await supabase
+  // Fetch tasks assigned to the user
+  const { data: assignedTasks } = await supabase
     .from('tasks')
     .select('*')
     .eq('assigned_to', user)
-    .eq('status', 'open')
+    .eq('status', 'open');
 
-  const { data: watching } = await supabase
+  // Fetch tasks the user is watching
+  const { data: watchingTasks } = await supabase
     .from('tasks')
     .select('*')
-    .contains('watchers', [user])
+    .contains('watchers', [user]);
 
+  // Build Home Tab blocks
   const blocks = [
-    { type: 'header', text: { type: 'plain_text', text: 'Your Tasks' } }
-  ]
+    { type: 'header', text: { type: 'plain_text', text: '📝 Your Tasks' } },
+  ];
 
-  if (!assigned?.length) {
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: '_No tasks 🎉_' } })
-  } else {
-    assigned.forEach(t => {
+  if (assignedTasks?.length) {
+    assignedTasks.forEach((task) => {
       blocks.push({
         type: 'section',
-        text: { type: 'mrkdwn', text: `*${t.title}*\nID: ${t.id}` },
+        text: { type: 'mrkdwn', text: `*${task.title}*\nID: ${task.id}` },
         accessory: {
           type: 'button',
-          text: { type: 'plain_text', text: 'Done' },
+          text: { type: 'plain_text', text: 'Mark Done' },
           action_id: 'task_done',
-          value: t.id
-        }
-      })
-    })
+          value: task.id,
+        },
+      });
+    });
+  } else {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: '_No tasks assigned!_' } });
   }
 
-  if (watching?.length) {
-    blocks.push({ type: 'header', text: { type: 'plain_text', text: 'Watching' } })
-    watching.forEach(t =>
-      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `👀 ${t.title}` } })
-    )
+  if (watchingTasks?.length) {
+    blocks.push({ type: 'divider' });
+    blocks.push({ type: 'header', text: { type: 'plain_text', text: '👀 Watching' } });
+    watchingTasks.forEach((task) => {
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `${task.title}` },
+      });
+    });
   }
 
+  // Render the Home Tab
   await client.views.publish({
     user_id: user,
-    view: { type: 'home', blocks }
-  })
+    view: { type: 'home', blocks },
+  });
 }
