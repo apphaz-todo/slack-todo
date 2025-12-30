@@ -7,67 +7,84 @@ const { App } = pkg;
 /* -------------------------------------------------
    ENV CHECK
 -------------------------------------------------- */
+console.log('🔍 Checking environment variables...');
 if (
   !process.env.SLACK_BOT_TOKEN ||
   !process.env.SLACK_SIGNING_SECRET ||
   !process.env.SUPABASE_URL ||
   !process.env.SUPABASE_SERVICE_ROLE_KEY
 ) {
-  throw new Error('❌ Missing environment variables');
+  console.error('❌ Missing environment variables');
+  throw new Error('Missing environment variables');
 }
+console.log('✅ Environment variables OK');
 
 /* -------------------------------------------------
    SLACK APP
 -------------------------------------------------- */
+console.log('⚙️ Initializing Slack app...');
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   signingSecret: process.env.SLACK_SIGNING_SECRET,
   port: process.env.PORT || 3000,
 });
+console.log('✅ Slack app initialized');
 
 /* -------------------------------------------------
    SUPABASE
 -------------------------------------------------- */
+console.log('⚙️ Initializing Supabase...');
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
+console.log('✅ Supabase client ready');
 
 /* -------------------------------------------------
    HOME TAB RENDER
 -------------------------------------------------- */
 async function publishHome(userId, client, activeTab = 'home') {
-  const { data: tasks } = await supabase
+  console.log(`🏠 Rendering Home tab for user: ${userId}, tab: ${activeTab}`);
+
+  const { data: tasks, error } = await supabase
     .from('tasks')
     .select('*')
     .or(`assigned_to.eq.${userId},created_by.eq.${userId}`)
     .order('created_at', { ascending: true });
 
-  const openTasks = (tasks || []).filter(t => t.status === 'open');
+  if (error) {
+    console.error('❌ Supabase fetch error:', error);
+    return;
+  }
+
+  console.log(`📦 Tasks fetched: ${tasks.length}`);
+
+  const openTasks = tasks.filter(t => t.status === 'open');
+  console.log(`📝 Open tasks: ${openTasks.length}`);
 
   const blocks = [];
 
-  /* -------- TOP FILTER TABS -------- */
+  /* ---------- TOP FILTER TABS ---------- */
   blocks.push({
     type: 'actions',
     elements: [
       tabButton('Home', 'home', activeTab),
-      tabButton('Completed (0)', 'completed', activeTab),
-      tabButton('Archived (0)', 'archived', activeTab),
-      tabButton('Delegated (0)', 'delegated', activeTab),
-      tabButton('Watching (0)', 'watching', activeTab),
+      tabButton('Completed', 'completed', activeTab),
+      tabButton('Archived', 'archived', activeTab),
+      tabButton('Delegated', 'delegated', activeTab),
+      tabButton('Watching', 'watching', activeTab),
     ],
   });
 
   blocks.push({ type: 'divider' });
 
-  /* -------- TODAY HEADER -------- */
+  /* ---------- TODAY HEADER ---------- */
   blocks.push({
     type: 'header',
     text: { type: 'plain_text', text: '📅 Today' },
   });
 
-  /* -------- TASK LIST -------- */
+  /* ---------- TASK LIST ---------- */
   if (!openTasks.length) {
     blocks.push({
       type: 'section',
@@ -75,7 +92,9 @@ async function publishHome(userId, client, activeTab = 'home') {
     });
   }
 
-  openTasks.forEach(task => {
+  for (const task of openTasks) {
+    console.log(`➡️ Rendering task: ${task.id} - ${task.title}`);
+
     blocks.push({
       type: 'section',
       text: {
@@ -84,17 +103,17 @@ async function publishHome(userId, client, activeTab = 'home') {
       },
     });
 
-    if (task.note) {
-      blocks.push({
-        type: 'context',
-        elements: [
-          {
-            type: 'mrkdwn',
-            text: `📝 ${task.note}`,
-          },
-        ],
-      });
-    }
+    blocks.push({
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text:
+            `Owner: <@${task.created_by}> | Assignee: <@${task.assigned_to}>` +
+            (task.note ? `\n📝 ${task.note}` : ''),
+        },
+      ],
+    });
 
     blocks.push({
       type: 'actions',
@@ -116,27 +135,26 @@ async function publishHome(userId, client, activeTab = 'home') {
     });
 
     blocks.push({ type: 'divider' });
-  });
+  }
 
-  /* -------- BOTTOM UTILITY BAR -------- */
+  /* ---------- BOTTOM UTILITY BAR ---------- */
   blocks.push({
     type: 'actions',
     elements: [
       utilityButton('🔍 Search', 'search'),
       utilityButton('🆕 New task', 'new_task'),
-      utilityButton('⚙️ Personal settings', 'settings'),
+      utilityButton('⚙️ Settings', 'settings'),
       utilityButton('💬 Support', 'support'),
       utilityButton('❓ Help', 'help'),
     ],
   });
 
+  console.log('📤 Publishing Home tab...');
   await client.views.publish({
     user_id: userId,
-    view: {
-      type: 'home',
-      blocks,
-    },
+    view: { type: 'home', blocks },
   });
+  console.log('✅ Home tab published');
 }
 
 /* -------------------------------------------------
@@ -162,44 +180,37 @@ function utilityButton(text, value) {
 }
 
 /* -------------------------------------------------
-   HOME OPEN EVENT
+   EVENTS & ACTIONS
 -------------------------------------------------- */
 app.event('app_home_opened', async ({ event, client }) => {
+  console.log(`🏠 Home opened by ${event.user}`);
   await publishHome(event.user, client);
 });
 
-/* -------------------------------------------------
-   TAB SWITCH
--------------------------------------------------- */
 app.action('home_tab', async ({ body, ack, client }) => {
   await ack();
+  console.log(`🔁 Tab switched to: ${body.actions[0].value}`);
   await publishHome(body.user.id, client, body.actions[0].value);
 });
 
-/* -------------------------------------------------
-   COMPLETE TASK
--------------------------------------------------- */
 app.action('task_complete', async ({ body, ack, client }) => {
   await ack();
+  const taskId = body.actions[0].value;
+  console.log(`✅ Completing task: ${taskId}`);
 
-  await supabase
-    .from('tasks')
-    .update({ status: 'done' })
-    .eq('id', body.actions[0].value);
-
+  await supabase.from('tasks').update({ status: 'done' }).eq('id', taskId);
   await publishHome(body.user.id, client);
 });
 
-/* -------------------------------------------------
-   VIEW TASK (MODAL)
--------------------------------------------------- */
 app.action('task_view', async ({ body, ack, client }) => {
   await ack();
+  const taskId = body.actions[0].value;
+  console.log(`👁 Viewing task: ${taskId}`);
 
   const { data: task } = await supabase
     .from('tasks')
     .select('*')
-    .eq('id', body.actions[0].value)
+    .eq('id', taskId)
     .single();
 
   await client.views.open({
@@ -209,17 +220,9 @@ app.action('task_view', async ({ body, ack, client }) => {
       title: { type: 'plain_text', text: 'Task details' },
       close: { type: 'plain_text', text: 'Close' },
       blocks: [
-        {
-          type: 'section',
-          text: { type: 'mrkdwn', text: `*${task.title}*` },
-        },
+        { type: 'section', text: { type: 'mrkdwn', text: `*${task.title}*` } },
         ...(task.note
-          ? [
-              {
-                type: 'section',
-                text: { type: 'mrkdwn', text: task.note },
-              },
-            ]
+          ? [{ type: 'section', text: { type: 'mrkdwn', text: task.note } }]
           : []),
       ],
     },
@@ -227,10 +230,11 @@ app.action('task_view', async ({ body, ack, client }) => {
 });
 
 /* -------------------------------------------------
-   /todo COMMAND (CREATE TASK)
+   SLASH COMMAND
 -------------------------------------------------- */
 app.command('/todo', async ({ command, ack, client }) => {
   await ack();
+  console.log(`/todo invoked by ${command.user_id}`);
 
   await client.views.open({
     trigger_id: command.trigger_id,
@@ -239,7 +243,6 @@ app.command('/todo', async ({ command, ack, client }) => {
       callback_id: 'create_task',
       title: { type: 'plain_text', text: 'New task' },
       submit: { type: 'plain_text', text: 'Create' },
-      close: { type: 'plain_text', text: 'Cancel' },
       blocks: [
         {
           type: 'input',
@@ -248,10 +251,6 @@ app.command('/todo', async ({ command, ack, client }) => {
           element: {
             type: 'plain_text_input',
             action_id: 'title',
-            placeholder: {
-              type: 'plain_text',
-              text: 'What needs to be done?',
-            },
           },
         },
         {
@@ -270,11 +269,9 @@ app.command('/todo', async ({ command, ack, client }) => {
   });
 });
 
-/* -------------------------------------------------
-   CREATE TASK SUBMIT
--------------------------------------------------- */
 app.view('create_task', async ({ ack, body, view, client }) => {
   await ack();
+  console.log('➕ Creating new task');
 
   const title = view.state.values.title_block.title.value;
   const note = view.state.values.note_block?.note?.value || null;
@@ -287,6 +284,7 @@ app.view('create_task', async ({ ack, body, view, client }) => {
     assigned_to: body.user.id,
   });
 
+  console.log('✅ Task created');
   await publishHome(body.user.id, client);
 });
 
