@@ -1,19 +1,21 @@
 import 'dotenv/config';
-import { App } from '@slack/bolt';
+import pkg from '@slack/bolt';
 import { createClient } from '@supabase/supabase-js';
 
+const { App } = pkg;
+
 /* -----------------------------
-   Slack Bolt App Initialization
+   Slack App
 ------------------------------ */
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   signingSecret: process.env.SLACK_SIGNING_SECRET,
-  socketMode: false, // IMPORTANT for Render / HTTP mode
+  socketMode: false,
   port: process.env.PORT || 3000,
 });
 
 /* -----------------------------
-   Supabase Initialization
+   Supabase
 ------------------------------ */
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -21,126 +23,69 @@ const supabase = createClient(
 );
 
 /* -----------------------------
-   /todo Slash Command
+   /todo Command
 ------------------------------ */
 app.command('/todo', async ({ command, ack, say, logger }) => {
   await ack();
 
-  const [subcommand, ...params] = command.text.trim().split(' ');
-  const description = params.join(' ');
+  const [sub, ...rest] = command.text.trim().split(' ');
+  const text = rest.join(' ');
 
   try {
-    switch (subcommand) {
-      case 'add': {
-        if (!description) {
-          await say('❌ Usage: `/todo add <task description>`');
-          return;
-        }
+    switch (sub) {
+      case 'add':
+        if (!text) return say('❌ `/todo add <task>`');
 
-        const { error } = await supabase
-          .from('tasks')
-          .insert({
-            title: description,
-            assigned_to: command.user_id,
-            status: 'open',
-          });
+        await supabase.from('tasks').insert({
+          title: text,
+          assigned_to: command.user_id,
+          status: 'open',
+        });
 
-        if (error) {
-          logger.error(error);
-          await say('❌ Failed to add task.');
-          return;
-        }
-
-        await say(`✅ Task added: *${description}*`);
+        await say(`✅ Added: *${text}*`);
         break;
-      }
 
       case 'list': {
-        const { data, error } = await supabase
+        const { data } = await supabase
           .from('tasks')
-          .select('id, title')
+          .select('id,title')
           .eq('assigned_to', command.user_id)
           .eq('status', 'open');
 
-        if (error) {
-          logger.error(error);
-          await say('❌ Failed to fetch tasks.');
-          return;
-        }
+        if (!data?.length) return say('📭 No open tasks.');
 
-        if (!data.length) {
-          await say('📭 No open tasks.');
-          return;
-        }
-
-        const list = data.map(t => `• (${t.id}) ${t.title}`).join('\n');
-        await say(`📝 Your tasks:\n${list}`);
+        await say(
+          '📝 Tasks:\n' +
+            data.map(t => `• (${t.id}) ${t.title}`).join('\n')
+        );
         break;
       }
 
-      case 'done': {
-        if (!description) {
-          await say('❌ Usage: `/todo done <task_id>`');
-          return;
-        }
+      case 'done':
+        if (!text) return say('❌ `/todo done <id>`');
 
-        const { error } = await supabase
+        await supabase
           .from('tasks')
           .update({ status: 'done' })
-          .eq('id', description)
+          .eq('id', text)
           .eq('assigned_to', command.user_id);
 
-        if (error) {
-          logger.error(error);
-          await say('❌ Failed to complete task.');
-          return;
-        }
-
-        await say(`✅ Task ${description} marked as complete.`);
+        await say(`✅ Task ${text} completed`);
         break;
-      }
-
-      case 'search': {
-        if (!description) {
-          await say('❌ Usage: `/todo search <keyword>`');
-          return;
-        }
-
-        const { data, error } = await supabase
-          .from('tasks')
-          .select('id, title')
-          .ilike('title', `%${description}%`)
-          .eq('assigned_to', command.user_id);
-
-        if (error) {
-          logger.error(error);
-          await say('❌ Search failed.');
-          return;
-        }
-
-        if (!data.length) {
-          await say('🔍 No matching tasks found.');
-          return;
-        }
-
-        const list = data.map(t => `• (${t.id}) ${t.title}`).join('\n');
-        await say(`🔍 Results:\n${list}`);
-        break;
-      }
 
       default:
-        await say('❓ Usage: `/todo add | list | done | search`');
+        await say('❓ `/todo add | list | done`');
     }
-  } catch (err) {
-    logger.error(err);
-    await say('❌ Unexpected error occurred.');
+  } catch (e) {
+    logger.error(e);
+    await say('❌ Error occurred');
   }
 });
 
 /* -----------------------------
-   Start App
+   Start Server
 ------------------------------ */
 (async () => {
   await app.start();
-  console.log('⚡ Slack Todo app is running');
+  console.log('⚡ Slack Todo app running');
 })();
