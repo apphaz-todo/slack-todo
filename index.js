@@ -1,252 +1,164 @@
-import pkg from '@slack/bolt'
-import dotenv from 'dotenv'
-import express from 'express'
-import { supabase } from './supabase.js'
-import { handleHome } from './home.js'
+import pkg from '@slack/bolt';
+import dotenv from 'dotenv';
+import express from 'express';
+import { supabase } from './supabase.js';
+import { handleHome } from './home.js';
 
-dotenv.config()
+dotenv.config();
 
-const { App, ExpressReceiver } = pkg
+const { App, ExpressReceiver } = pkg;
 
-console.log('🚀 Slack Todo starting')
-console.log('ENV CHECK:', {
-  hasBotToken: !!process.env.SLACK_BOT_TOKEN,
-  hasSigningSecret: !!process.env.SLACK_SIGNING_SECRET,
-  hasSupabase: !!process.env.SUPABASE_URL
-})
+// Validate environment variables
+const validateEnvVars = () => {
+  if (!process.env.SLACK_BOT_TOKEN) throw new Error("Missing SLACK_BOT_TOKEN");
+  if (!process.env.SLACK_SIGNING_SECRET) throw new Error("Missing SLACK_SIGNING_SECRET");
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
+    throw new Error("Supabase configuration is missing or invalid");
+  }
+};
+validateEnvVars();
 
-/* ---------------- RECEIVER ---------------- */
+console.log('🚀 Slack Todo starting');
 
+// Initialize Slack App
 const receiver = new ExpressReceiver({
-  signingSecret: process.env.SLACK_SIGNING_SECRET
-})
+  signingSecret: process.env.SLACK_SIGNING_SECRET,
+});
 
-// SAFE request logging (no body access)
+const app = new App({
+  token: process.env.SLACK_BOT_TOKEN,
+  receiver,
+  processBeforeResponse: true,
+});
+
+// Middleware: Log requests
 receiver.app.use((req, res, next) => {
   console.log('➡️ Slack request', {
     method: req.method,
     url: req.originalUrl,
     contentType: req.headers['content-type'],
-    hasSignature: !!req.headers['x-slack-signature']
-  })
-  next()
-})
+    hasSignature: !!req.headers['x-slack-signature'],
+  });
+  next();
+});
 
-/* ---------------- APP ---------------- */
-
-const app = new App({
-  token: process.env.SLACK_BOT_TOKEN,
-  receiver,
-  processBeforeResponse: true, // 🔥 CRITICAL FIX
-  logLevel: 'INFO'
-})
-
-/* ---------------- SLASH COMMAND ---------------- */
-
+// Slash command: /todo
 app.command('/todo', async ({ command, ack, say, client }) => {
-  // 🔥 MUST BE FIRST
-  await ack()
+  await ack();
+  const text = command.text.trim();
+  const subcommand = text.split(' ')[0] || '';
 
   try {
-    const text = command.text.trim()
-    console.log('📥 /todo', {
-      user: command.user_id,
-      channel: command.channel_id,
-      text
-    })
+    console.log(`📥 Received command: /todo ${subcommand}`);
+    switch (subcommand) {
+      case 'add': {
+        const parts = text.replace(/^add\s*/, '').split(' ');
+        const watchers = [];
+        let due_at = null;
+        let recurring = null;
 
-    /* ADD */
-    if (text.startsWith('add')) {
-      const parts = text.replace(/^add/i, '').trim().split(' ')
-      const watchers = []
-      let due_at = null
-      let recurring = null
+        const words = parts.filter(part => {
+          if (part.startsWith('<@')) {
+            watchers.push(part.replace(/[<@>]/g, ''));
+            return false;
+          }
+          if (part.startsWith('due:')) {
+            due_at = part.replace('due:', '');
+            return false;
+          }
+          if (part.startsWith('recurring:')) {
+            recurring = part.replace('recurring:', '');
+            return false;
+          }
+          return true;
+        });
 
-      const words = parts.filter(p => {
-        if (p.startsWith('<@')) {
-          watchers.push(p.replace(/[<@>]/g, ''))
-          return false
-        }
-        if (p.startsWith('due:')) {
-          due_at = p.replace('due:', '')
-          return false
-        }
-        if (p.startsWith('recurring:')) {
-          recurring = p.replace('recurring:', '')
-          return false
-        }
-        return true
-      })
+        const title = words.join(' ').trim();
+        const assignedTo = watchers[0] || command.user_id;
 
-      const title = words.join(' ')
-      const assigned = watchers[0] || command.user_id
-
-      const { data, error } = await supabase
-        .from('tasks')
-        .insert({
+        const { data, error } = await supabase.from('tasks').insert({
           title,
           created_by: command.user_id,
-          assigned_to: assigned,
+          assigned_to: assignedTo,
           watchers,
           due_at,
           recurring,
-          channel_id: command.channel_id
-        })
-        .select()
-        .single()
+          channel_id: command.channel_id,
+        }).select().single();
 
-      if (error) {
-        console.error('❌ Supabase insert failed', error)
-        await say('❌ Failed to create task')
-        return
+        if (error) throw new Error(`Failed to add task: ${error.message}`);
+
+        await say(`✅ Task added: *${title}* (ID: ${data.id})`);
+        break;
       }
 
-      await say(`✅ Task added: *${title}* (ID: ${data.id})`)
+      case 'list': {
+        const { data, error } = await supabase.from('tasks')
+          .select('*')
+          .eq('assigned_to', command.user_id)
+          .eq('status', 'open');
 
-      for (const w of watchers) {
-        await client.chat.postMessage({
-          channel: w,
-          text: `👀 You are watching task: *${title}*`
-        })
+        if (error) throw new Error(`Failed to list tasks: ${error.message}`);
+
+        if (!data || data.length === 0) {
+          await say('🎉 No open tasks.');
+        } else {
+          await say(data.map(task => `• ${task.title} (ID: ${task.id})`).join('\n'));
+        }
+        break;
       }
-      return
+
+      case 'done': {
+        const taskId = text.replace(/^done\s*/, '').trim();
+        const { error } = await supabase.from('tasks')
+          .update({ status: 'done' })
+          .eq('id', taskId);
+
+        if (error) throw new Error(`Failed to complete task: ${error.message}`);
+        await say('✅ Task marked as done.');
+        break;
+      }
+
+      case 'search': {
+        const query = text.replace(/^search\s*/, '').trim();
+        const { data, error } = await supabase.from('tasks')
+          .select('*')
+          .ilike('title', `%${query}%`);
+
+        if (error) throw new Error(`Search failed: ${error.message}`);
+
+        if (!data || data.length === 0) {
+          await say('🔍 No matching tasks found.');
+        } else {
+          await say(data.map(task => `• ${task.title}`).join('\n'));
+        }
+        break;
+      }
+
+      default: {
+        await say('❓ Unknown subcommand. Usage: `/todo add|list|done|search`.\nExample: `/todo add Finish documentation`');
+      }
     }
-
-    /* LIST */
-    if (text === 'list') {
-      const { data, error } = await supabase
-        .from('tasks')
-        .select('*')
-        .eq('assigned_to', command.user_id)
-        .eq('status', 'open')
-
-      if (error) {
-        console.error('❌ Supabase list failed', error)
-        await say('❌ Failed to fetch tasks')
-        return
-      }
-
-      if (!data?.length) {
-        await say('🎉 No open tasks')
-        return
-      }
-
-      await say(
-        data.map(t => `• ${t.title} (ID: ${t.id})`).join('\n')
-      )
-      return
-    }
-
-    /* DONE */
-    if (text.startsWith('done')) {
-      const id = text.replace('done', '').trim()
-
-      const { data: task } = await supabase
-        .from('tasks')
-        .select('*')
-        .eq('id', id)
-        .single()
-
-      if (!task) {
-        await say('❌ Task not found')
-        return
-      }
-
-      await supabase
-        .from('tasks')
-        .update({ status: 'done' })
-        .eq('id', id)
-
-      if (task.recurring) {
-        const next = new Date()
-        if (task.recurring === 'daily') next.setDate(next.getDate() + 1)
-        if (task.recurring === 'weekly') next.setDate(next.getDate() + 7)
-        if (task.recurring === 'monthly') next.setMonth(next.getMonth() + 1)
-
-        await supabase.from('tasks').insert({
-          title: task.title,
-          created_by: task.created_by,
-          assigned_to: task.assigned_to,
-          recurring: task.recurring,
-          due_at: next
-        })
-      }
-
-      await say('✅ Task completed')
-      return
-    }
-
-    /* SEARCH */
-    if (text.startsWith('search')) {
-      const q = text.replace('search', '').trim()
-
-      const { data } = await supabase
-        .from('tasks')
-        .select('*')
-        .ilike('title', `%${q}%`)
-
-      if (!data?.length) {
-        await say('🔍 No results')
-        return
-      }
-
-      await say(data.map(t => `• ${t.title}`).join('\n'))
-      return
-    }
-
-    await say('Usage: `/todo add|list|done|search`')
-
   } catch (err) {
-    console.error('🔥 /todo handler error', err)
-    await say('❌ Internal error')
+    console.error('🔥 Error handling /todo:', err);
+    await say('❌ An internal error occurred.');
   }
-})
+});
 
-/* ---------------- APP HOME ---------------- */
+// App Home handler
+app.event('app_home_opened', async ({ event, client }) => {
+  try {
+    await handleHome({ user: event.user, client });
+  } catch (error) {
+    console.error('Error in app_home_opened:', error);
+  }
+});
 
-app.event('app_home_opened', async (payload) => {
-  console.log('🏠 App Home opened by', payload.event.user)
-  await handleHome(payload)
-})
+// Start Server
+const server = express();
+server.use('/slack/events', receiver.app);
+const PORT = process.env.PORT || 3000;
 
-/* ---------------- BUTTON ---------------- */
-
-app.action('task_done', async ({ body, ack, client }) => {
-  await ack()
-
-  await supabase
-    .from('tasks')
-    .update({ status: 'done' })
-    .eq('id', body.actions[0].value)
-
-  await handleHome({ event: { user: body.user.id }, client })
-})
-
-/* ---------------- MESSAGE → TASK ---------------- */
-
-app.shortcut('add_to_todo', async ({ shortcut, ack, client }) => {
-  await ack()
-
-  await supabase.from('tasks').insert({
-    title: shortcut.message.text,
-    created_by: shortcut.user.id,
-    assigned_to: shortcut.user.id,
-    channel_id: shortcut.channel.id
-  })
-
-  await client.chat.postEphemeral({
-    channel: shortcut.channel.id,
-    user: shortcut.user.id,
-    text: '✅ Message added as task'
-  })
-})
-
-/* ---------------- SERVER ---------------- */
-
-const server = express()
-server.use('/slack/events', receiver.app)
-
-const PORT = process.env.PORT || 3000
 server.listen(PORT, () => {
-  console.log(`⚡ Slack Todo running on port ${PORT}`)
-})
+  console.log(`⚡ Slack Todo app is running on port ${PORT}`);
+});
