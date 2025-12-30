@@ -44,12 +44,12 @@ console.log('✅ Supabase client ready');
    HOME TAB RENDER
 ================================================= */
 async function publishHome(userId, client, activeTab = 'home') {
-  console.log(`🏠 Publishing Home tab for user=${userId}, tab=${activeTab}`);
+  console.log(`🏠 Publishing Home tab | user=${userId} | tab=${activeTab}`);
 
   const { data: tasks, error } = await supabase
     .from('tasks')
     .select('*')
-    .or(`assigned_to.eq.${userId},created_by.eq.${userId}`)
+    .or(`assigned_to.eq.${userId},created_by.eq.${userId},watchers.cs.{${userId}}`)
     .order('created_at', { ascending: true });
 
   if (error) {
@@ -59,48 +59,75 @@ async function publishHome(userId, client, activeTab = 'home') {
 
   console.log(`📦 Total tasks fetched: ${tasks.length}`);
 
-  const openTasks = tasks.filter(t => t.status === 'open');
-  console.log(`📝 Open tasks: ${openTasks.length}`);
+  /* -------- TAB FILTERING -------- */
+  let filteredTasks = [];
+  if (activeTab === 'home') {
+    filteredTasks = tasks.filter(t => t.status === 'open');
+  } else if (activeTab === 'completed') {
+    filteredTasks = tasks.filter(t => t.status === 'done');
+  } else if (activeTab === 'archived') {
+    filteredTasks = tasks.filter(t => t.status === 'archived');
+  } else if (activeTab === 'delegated') {
+    filteredTasks = tasks.filter(
+      t => t.created_by === userId && t.assigned_to !== userId
+    );
+  } else if (activeTab === 'watching') {
+    filteredTasks = tasks.filter(
+      t => Array.isArray(t.watchers) && t.watchers.includes(userId)
+    );
+  }
+
+  console.log(`📝 Filtered tasks (${activeTab}): ${filteredTasks.length}`);
+
+  /* -------- COUNTS -------- */
+  const counts = {
+    home: tasks.filter(t => t.status === 'open').length,
+    completed: tasks.filter(t => t.status === 'done').length,
+    archived: tasks.filter(t => t.status === 'archived').length,
+    delegated: tasks.filter(
+      t => t.created_by === userId && t.assigned_to !== userId
+    ).length,
+    watching: tasks.filter(
+      t => Array.isArray(t.watchers) && t.watchers.includes(userId)
+    ).length,
+  };
 
   const blocks = [];
 
-  /* ---------- TOP FILTER BUTTONS ---------- */
+  /* -------- TOP FILTER TABS -------- */
   blocks.push({
     type: 'actions',
     elements: [
-      tabButton('Home', 'home', activeTab),
-      tabButton('Completed (0)', 'completed', activeTab),
-      tabButton('Archived (0)', 'archived', activeTab),
-      tabButton('Delegated (0)', 'delegated', activeTab),
-      tabButton('Watching (0)', 'watching', activeTab),
+      tabButton(`Home (${counts.home})`, 'home', activeTab),
+      tabButton(`Completed (${counts.completed})`, 'completed', activeTab),
+      tabButton(`Archived (${counts.archived})`, 'archived', activeTab),
+      tabButton(`Delegated (${counts.delegated})`, 'delegated', activeTab),
+      tabButton(`Watching (${counts.watching})`, 'watching', activeTab),
     ],
   });
 
   blocks.push({ type: 'divider' });
 
-  /* ---------- TODAY HEADER ---------- */
+  /* -------- HEADER -------- */
   blocks.push({
     type: 'header',
-    text: { type: 'plain_text', text: '📅 Today' },
+    text: { type: 'plain_text', text: '📋 Tasks' },
   });
 
-  /* ---------- TASK LIST ---------- */
-  if (!openTasks.length) {
+  /* -------- TASK LIST -------- */
+  if (!filteredTasks.length) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: '📭 No tasks for today' },
+      text: { type: 'mrkdwn', text: '📭 No tasks found' },
     });
   }
 
-  for (const task of openTasks) {
+  for (const task of filteredTasks) {
     console.log(`➡️ Rendering task ${task.id}: ${task.title}`);
 
     blocks.push({
       type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `🚩 *${task.title}*`,
-      },
+      text: { type: 'mrkdwn', text: `🚩 *${task.title}*` },
     });
 
     blocks.push({
@@ -115,50 +142,52 @@ async function publishHome(userId, client, activeTab = 'home') {
       ],
     });
 
+    const actionButtons = [];
+
+    if (task.status === 'open') {
+      actionButtons.push({
+        type: 'button',
+        text: { type: 'plain_text', text: 'Complete' },
+        style: 'primary',
+        action_id: 'task_complete',
+        value: task.id,
+      });
+    }
+
+    actionButtons.push({
+      type: 'button',
+      text: { type: 'plain_text', text: 'View' },
+      action_id: 'task_view',
+      value: task.id,
+    });
+
     blocks.push({
       type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: 'Complete' },
-          style: 'primary',
-          action_id: 'task_complete',
-          value: task.id,
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: 'View' },
-          action_id: 'task_view',
-          value: task.id,
-        },
-      ],
+      elements: actionButtons,
     });
 
     blocks.push({ type: 'divider' });
   }
 
-  /* ---------- BOTTOM UTILITY BAR ---------- */
+  /* -------- BOTTOM BAR -------- */
   blocks.push({
     type: 'actions',
     elements: [
       utilityButton('🔍 Search', 'search'),
       utilityButton('🆕 New task', 'new_task'),
-      utilityButton('⚙️ Personal settings', 'settings'),
+      utilityButton('⚙️ Settings', 'settings'),
       utilityButton('💬 Support', 'support'),
       utilityButton('❓ Help', 'help'),
     ],
   });
 
-  console.log('📤 Sending Home tab to Slack...');
+  console.log('📤 Publishing Home tab...');
   await client.views.publish({
     user_id: userId,
-    view: {
-      type: 'home',
-      blocks,
-    },
+    view: { type: 'home', blocks },
   });
 
-  console.log('✅ Home tab published successfully');
+  console.log('✅ Home tab published');
 }
 
 /* =================================================
@@ -168,7 +197,7 @@ function tabButton(text, value, current) {
   return {
     type: 'button',
     text: { type: 'plain_text', text },
-    action_id: `home_tab_${value}`, // ✅ UNIQUE
+    action_id: `home_tab_${value}`,
     value,
     style: value === current ? 'primary' : undefined,
   };
@@ -184,50 +213,31 @@ function utilityButton(text, value) {
 }
 
 /* =================================================
-   EVENTS
+   EVENTS & ACTIONS
 ================================================= */
 app.event('app_home_opened', async ({ event, client }) => {
   console.log(`🏠 app_home_opened by ${event.user}`);
   await publishHome(event.user, client);
 });
 
-/* =================================================
-   TAB SWITCH HANDLER (REGEX)
-================================================= */
 app.action(/^home_tab_/, async ({ body, ack, client }) => {
   await ack();
-
-  const actionId = body.actions[0].action_id;
-  const tab = actionId.replace('home_tab_', '');
-
-  console.log(`🔁 Switched Home tab to: ${tab}`);
-
+  const tab = body.actions[0].action_id.replace('home_tab_', '');
+  console.log(`🔁 Switched tab to ${tab}`);
   await publishHome(body.user.id, client, tab);
 });
 
-/* =================================================
-   COMPLETE TASK
-================================================= */
 app.action('task_complete', async ({ body, ack, client }) => {
   await ack();
-
   const taskId = body.actions[0].value;
   console.log(`✅ Completing task ${taskId}`);
 
-  await supabase
-    .from('tasks')
-    .update({ status: 'done' })
-    .eq('id', taskId);
-
+  await supabase.from('tasks').update({ status: 'done' }).eq('id', taskId);
   await publishHome(body.user.id, client);
 });
 
-/* =================================================
-   VIEW TASK
-================================================= */
 app.action('task_view', async ({ body, ack, client }) => {
   await ack();
-
   const taskId = body.actions[0].value;
   console.log(`👁 Viewing task ${taskId}`);
 
@@ -244,17 +254,9 @@ app.action('task_view', async ({ body, ack, client }) => {
       title: { type: 'plain_text', text: 'Task details' },
       close: { type: 'plain_text', text: 'Close' },
       blocks: [
-        {
-          type: 'section',
-          text: { type: 'mrkdwn', text: `*${task.title}*` },
-        },
+        { type: 'section', text: { type: 'mrkdwn', text: `*${task.title}*` } },
         ...(task.note
-          ? [
-              {
-                type: 'section',
-                text: { type: 'mrkdwn', text: task.note },
-              },
-            ]
+          ? [{ type: 'section', text: { type: 'mrkdwn', text: task.note } }]
           : []),
       ],
     },
@@ -281,10 +283,7 @@ app.command('/todo', async ({ command, ack, client }) => {
           type: 'input',
           block_id: 'title_block',
           label: { type: 'plain_text', text: 'Task' },
-          element: {
-            type: 'plain_text_input',
-            action_id: 'title',
-          },
+          element: { type: 'plain_text_input', action_id: 'title' },
         },
         {
           type: 'input',
@@ -302,9 +301,6 @@ app.command('/todo', async ({ command, ack, client }) => {
   });
 });
 
-/* =================================================
-   CREATE TASK SUBMIT
-================================================= */
 app.view('create_task', async ({ ack, body, view, client }) => {
   await ack();
   console.log('➕ Creating new task');
@@ -325,7 +321,7 @@ app.view('create_task', async ({ ack, body, view, client }) => {
 });
 
 /* =================================================
-   START APP
+   START
 ================================================= */
 (async () => {
   await app.start();
