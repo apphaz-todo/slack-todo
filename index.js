@@ -4,9 +4,9 @@ import { createClient } from '@supabase/supabase-js';
 
 const { App } = pkg;
 
-/* -------------------------------------------------
+/* =================================================
    ENV CHECK
--------------------------------------------------- */
+================================================= */
 console.log('🔍 Checking environment variables...');
 if (
   !process.env.SLACK_BOT_TOKEN ||
@@ -19,9 +19,9 @@ if (
 }
 console.log('✅ Environment variables OK');
 
-/* -------------------------------------------------
-   SLACK APP
--------------------------------------------------- */
+/* =================================================
+   SLACK APP INIT
+================================================= */
 console.log('⚙️ Initializing Slack app...');
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -30,9 +30,9 @@ const app = new App({
 });
 console.log('✅ Slack app initialized');
 
-/* -------------------------------------------------
-   SUPABASE
--------------------------------------------------- */
+/* =================================================
+   SUPABASE INIT
+================================================= */
 console.log('⚙️ Initializing Supabase...');
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -40,11 +40,11 @@ const supabase = createClient(
 );
 console.log('✅ Supabase client ready');
 
-/* -------------------------------------------------
+/* =================================================
    HOME TAB RENDER
--------------------------------------------------- */
+================================================= */
 async function publishHome(userId, client, activeTab = 'home') {
-  console.log(`🏠 Rendering Home tab for user: ${userId}, tab: ${activeTab}`);
+  console.log(`🏠 Publishing Home tab for user=${userId}, tab=${activeTab}`);
 
   const { data: tasks, error } = await supabase
     .from('tasks')
@@ -57,22 +57,22 @@ async function publishHome(userId, client, activeTab = 'home') {
     return;
   }
 
-  console.log(`📦 Tasks fetched: ${tasks.length}`);
+  console.log(`📦 Total tasks fetched: ${tasks.length}`);
 
   const openTasks = tasks.filter(t => t.status === 'open');
   console.log(`📝 Open tasks: ${openTasks.length}`);
 
   const blocks = [];
 
-  /* ---------- TOP FILTER TABS ---------- */
+  /* ---------- TOP FILTER BUTTONS ---------- */
   blocks.push({
     type: 'actions',
     elements: [
       tabButton('Home', 'home', activeTab),
-      tabButton('Completed', 'completed', activeTab),
-      tabButton('Archived', 'archived', activeTab),
-      tabButton('Delegated', 'delegated', activeTab),
-      tabButton('Watching', 'watching', activeTab),
+      tabButton('Completed (0)', 'completed', activeTab),
+      tabButton('Archived (0)', 'archived', activeTab),
+      tabButton('Delegated (0)', 'delegated', activeTab),
+      tabButton('Watching (0)', 'watching', activeTab),
     ],
   });
 
@@ -93,7 +93,7 @@ async function publishHome(userId, client, activeTab = 'home') {
   }
 
   for (const task of openTasks) {
-    console.log(`➡️ Rendering task: ${task.id} - ${task.title}`);
+    console.log(`➡️ Rendering task ${task.id}: ${task.title}`);
 
     blocks.push({
       type: 'section',
@@ -143,28 +143,32 @@ async function publishHome(userId, client, activeTab = 'home') {
     elements: [
       utilityButton('🔍 Search', 'search'),
       utilityButton('🆕 New task', 'new_task'),
-      utilityButton('⚙️ Settings', 'settings'),
+      utilityButton('⚙️ Personal settings', 'settings'),
       utilityButton('💬 Support', 'support'),
       utilityButton('❓ Help', 'help'),
     ],
   });
 
-  console.log('📤 Publishing Home tab...');
+  console.log('📤 Sending Home tab to Slack...');
   await client.views.publish({
     user_id: userId,
-    view: { type: 'home', blocks },
+    view: {
+      type: 'home',
+      blocks,
+    },
   });
-  console.log('✅ Home tab published');
+
+  console.log('✅ Home tab published successfully');
 }
 
-/* -------------------------------------------------
+/* =================================================
    HELPERS
--------------------------------------------------- */
+================================================= */
 function tabButton(text, value, current) {
   return {
     type: 'button',
     text: { type: 'plain_text', text },
-    action_id: 'home_tab',
+    action_id: `home_tab_${value}`, // ✅ UNIQUE
     value,
     style: value === current ? 'primary' : undefined,
   };
@@ -179,33 +183,53 @@ function utilityButton(text, value) {
   };
 }
 
-/* -------------------------------------------------
-   EVENTS & ACTIONS
--------------------------------------------------- */
+/* =================================================
+   EVENTS
+================================================= */
 app.event('app_home_opened', async ({ event, client }) => {
-  console.log(`🏠 Home opened by ${event.user}`);
+  console.log(`🏠 app_home_opened by ${event.user}`);
   await publishHome(event.user, client);
 });
 
-app.action('home_tab', async ({ body, ack, client }) => {
+/* =================================================
+   TAB SWITCH HANDLER (REGEX)
+================================================= */
+app.action(/^home_tab_/, async ({ body, ack, client }) => {
   await ack();
-  console.log(`🔁 Tab switched to: ${body.actions[0].value}`);
-  await publishHome(body.user.id, client, body.actions[0].value);
+
+  const actionId = body.actions[0].action_id;
+  const tab = actionId.replace('home_tab_', '');
+
+  console.log(`🔁 Switched Home tab to: ${tab}`);
+
+  await publishHome(body.user.id, client, tab);
 });
 
+/* =================================================
+   COMPLETE TASK
+================================================= */
 app.action('task_complete', async ({ body, ack, client }) => {
   await ack();
-  const taskId = body.actions[0].value;
-  console.log(`✅ Completing task: ${taskId}`);
 
-  await supabase.from('tasks').update({ status: 'done' }).eq('id', taskId);
+  const taskId = body.actions[0].value;
+  console.log(`✅ Completing task ${taskId}`);
+
+  await supabase
+    .from('tasks')
+    .update({ status: 'done' })
+    .eq('id', taskId);
+
   await publishHome(body.user.id, client);
 });
 
+/* =================================================
+   VIEW TASK
+================================================= */
 app.action('task_view', async ({ body, ack, client }) => {
   await ack();
+
   const taskId = body.actions[0].value;
-  console.log(`👁 Viewing task: ${taskId}`);
+  console.log(`👁 Viewing task ${taskId}`);
 
   const { data: task } = await supabase
     .from('tasks')
@@ -220,18 +244,26 @@ app.action('task_view', async ({ body, ack, client }) => {
       title: { type: 'plain_text', text: 'Task details' },
       close: { type: 'plain_text', text: 'Close' },
       blocks: [
-        { type: 'section', text: { type: 'mrkdwn', text: `*${task.title}*` } },
+        {
+          type: 'section',
+          text: { type: 'mrkdwn', text: `*${task.title}*` },
+        },
         ...(task.note
-          ? [{ type: 'section', text: { type: 'mrkdwn', text: task.note } }]
+          ? [
+              {
+                type: 'section',
+                text: { type: 'mrkdwn', text: task.note },
+              },
+            ]
           : []),
       ],
     },
   });
 });
 
-/* -------------------------------------------------
-   SLASH COMMAND
--------------------------------------------------- */
+/* =================================================
+   /todo COMMAND
+================================================= */
 app.command('/todo', async ({ command, ack, client }) => {
   await ack();
   console.log(`/todo invoked by ${command.user_id}`);
@@ -243,6 +275,7 @@ app.command('/todo', async ({ command, ack, client }) => {
       callback_id: 'create_task',
       title: { type: 'plain_text', text: 'New task' },
       submit: { type: 'plain_text', text: 'Create' },
+      close: { type: 'plain_text', text: 'Cancel' },
       blocks: [
         {
           type: 'input',
@@ -269,6 +302,9 @@ app.command('/todo', async ({ command, ack, client }) => {
   });
 });
 
+/* =================================================
+   CREATE TASK SUBMIT
+================================================= */
 app.view('create_task', async ({ ack, body, view, client }) => {
   await ack();
   console.log('➕ Creating new task');
@@ -288,9 +324,9 @@ app.view('create_task', async ({ ack, body, view, client }) => {
   await publishHome(body.user.id, client);
 });
 
-/* -------------------------------------------------
-   START
--------------------------------------------------- */
+/* =================================================
+   START APP
+================================================= */
 (async () => {
   await app.start();
   console.log('⚡ Slack Todo app running');
