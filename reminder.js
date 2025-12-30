@@ -1,26 +1,17 @@
-import dotenv from 'dotenv'
-import pkg from '@slack/bolt'
-import { supabase } from './supabase.js'
+import { supabase } from './supabase.js';
 
-dotenv.config()
-const { WebClient } = pkg
-const slack = new WebClient(process.env.SLACK_BOT_TOKEN)
+export async function sendReminders(client) {
+  // Query overdue/incomplete tasks
+  const { data: overdueTasks } = await supabase
+    .from('tasks')
+    .select('*')
+    .lt('due_at', new Date().toISOString())
+    .eq('status', 'open');
 
-const now = new Date().toISOString()
-
-const { data } = await supabase
-  .from('reminders')
-  .select('*, tasks(title, assigned_to)')
-  .eq('sent', false)
-  .lte('remind_at', now)
-
-for (const r of data || []) {
-  await slack.chat.postMessage({
-    channel: r.tasks.assigned_to,
-    text: `⏰ Reminder: *${r.tasks.title}*`
-  })
-
-  await supabase.from('reminders')
-    .update({ sent: true })
-    .eq('id', r.id)
+  for (const task of overdueTasks) {
+    await client.chat.postMessage({
+      channel: task.assigned_to,
+      text: `🚨 Reminder: Task *${task.title}* is overdue!`,
+    });
+  }
 }
