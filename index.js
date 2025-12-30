@@ -14,8 +14,7 @@ console.log('🚀 Starting Slack Todo App')
 // ExpressReceiver (Slack handles body + signature)
 // ─────────────────────────────────────────────
 const receiver = new ExpressReceiver({
-  signingSecret: process.env.SLACK_SIGNING_SECRET,
-  processBeforeResponse: true
+  signingSecret: process.env.SLACK_SIGNING_SECRET
 })
 
 // ✅ SAFE logging (DO NOT touch body)
@@ -68,7 +67,9 @@ app.event('app_home_opened', handleHome)
 const server = express()
 
 // ✅ Let Bolt handle EVERYTHING under this path
-server.use('/slack/events', receiver.router)
+//server.use('/slack/events', receiver.router)
+server.use('/slack/events', receiver.app)
+
 
 const PORT = process.env.PORT || 3000
 server.listen(PORT, () => {
