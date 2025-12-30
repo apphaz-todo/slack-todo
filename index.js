@@ -38,8 +38,17 @@ const supabase = createClient(
 console.log('⚡ App initialized');
 
 /* =====================================================
-   CONSTANTS
+   HELPERS
 ===================================================== */
+function formatDate(dateStr) {
+  if (!dateStr) return 'No due date';
+  return new Date(dateStr).toLocaleDateString('en-US', {
+    month: 'short',
+    day: '2-digit',
+    year: 'numeric',
+  });
+}
+
 const REMINDER_OPTIONS = [
   ['🌅 Beginning of Day', 'bod'],
   ['🍱 After Lunch', 'after_lunch'],
@@ -54,7 +63,7 @@ const REMINDER_OPTIONS = [
    HOME TAB
 ===================================================== */
 async function publishHome(userId, client, tab = 'home') {
-  console.log(`🏠 Publish Home | user=${userId} | tab=${tab}`);
+  console.log(`🏠 Home | user=${userId} | tab=${tab}`);
 
   const { data: tasks = [] } = await supabase
     .from('tasks')
@@ -64,12 +73,31 @@ async function publishHome(userId, client, tab = 'home') {
     )
     .order('created_at', { ascending: true });
 
-  let filtered = [];
-  if (tab === 'completed') filtered = tasks.filter(t => t.status === 'done');
-  else if (tab === 'archived') filtered = tasks.filter(t => t.status === 'archived');
-  else if (tab === 'watching')
-    filtered = tasks.filter(t => t.watchers?.includes(userId));
-  else filtered = tasks.filter(t => t.status === 'open');
+  const counts = {
+    home: tasks.filter(t => t.status === 'open').length,
+    assigned: tasks.filter(t => t.assigned_to === userId && t.status === 'open').length,
+    completed: tasks.filter(t => t.status === 'done').length,
+    archived: tasks.filter(t => t.status === 'archived').length,
+    watching: tasks.filter(t => t.watchers?.includes(userId)).length,
+  };
+
+  let filtered;
+  switch (tab) {
+    case 'assigned':
+      filtered = tasks.filter(t => t.assigned_to === userId && t.status === 'open');
+      break;
+    case 'completed':
+      filtered = tasks.filter(t => t.status === 'done');
+      break;
+    case 'archived':
+      filtered = tasks.filter(t => t.status === 'archived');
+      break;
+    case 'watching':
+      filtered = tasks.filter(t => t.watchers?.includes(userId));
+      break;
+    default:
+      filtered = tasks.filter(t => t.status === 'open');
+  }
 
   const blocks = [];
 
@@ -77,10 +105,11 @@ async function publishHome(userId, client, tab = 'home') {
   blocks.push({
     type: 'actions',
     elements: [
-      tabBtn('Home', 'home', tab),
-      tabBtn('Completed', 'completed', tab),
-      tabBtn('Archived', 'archived', tab),
-      tabBtn('Watching', 'watching', tab),
+      tabBtn(`Home (${counts.home})`, 'home', tab),
+      tabBtn(`Assigned (${counts.assigned})`, 'assigned', tab),
+      tabBtn(`Completed (${counts.completed})`, 'completed', tab),
+      tabBtn(`Archived (${counts.archived})`, 'archived', tab),
+      tabBtn(`Watching (${counts.watching})`, 'watching', tab),
     ],
   });
 
@@ -104,9 +133,7 @@ async function publishHome(userId, client, tab = 'home') {
         elements: [
           {
             type: 'mrkdwn',
-            text: `📅 ${t.due_date || 'No due date'}${
-              t.note ? `\n📝 ${t.note}` : ''
-            }`,
+            text: `📅 ${formatDate(t.due_date)}${t.note ? `\n📝 ${t.note}` : ''}`,
           },
         ],
       },
@@ -114,15 +141,13 @@ async function publishHome(userId, client, tab = 'home') {
         type: 'actions',
         elements: [
           ...(t.status === 'open'
-            ? [
-                {
-                  type: 'button',
-                  text: { type: 'plain_text', text: 'Complete' },
-                  style: 'primary',
-                  action_id: 'task_complete',
-                  value: t.id,
-                },
-              ]
+            ? [{
+                type: 'button',
+                text: { type: 'plain_text', text: 'Complete' },
+                style: 'primary',
+                action_id: 'task_complete',
+                value: t.id,
+              }]
             : []),
           {
             type: 'button',
@@ -142,7 +167,6 @@ async function publishHome(userId, client, tab = 'home') {
     );
   }
 
-  /* Footer */
   blocks.push({
     type: 'actions',
     elements: [
@@ -176,7 +200,6 @@ const utilBtn = (text, value) => ({
    EVENTS
 ===================================================== */
 app.event('app_home_opened', async ({ event, client }) => {
-  console.log('🏠 app_home_opened');
   await publishHome(event.user, client);
 });
 
@@ -187,22 +210,25 @@ app.action(/^home_tab_/, async ({ body, ack, client }) => {
 });
 
 /* =====================================================
+   HOME BUTTONS
+===================================================== */
+app.action('util_new', async ({ body, ack, client }) => {
+  await ack();
+  await openTaskModal(client, body.trigger_id, 'create_task');
+});
+
+/* =====================================================
    TASK ACTIONS
 ===================================================== */
 app.action('task_complete', async ({ body, ack, client }) => {
   await ack();
-  console.log('✅ Complete task', body.actions[0].value);
   await supabase.from('tasks').update({ status: 'done' }).eq('id', body.actions[0].value);
   await publishHome(body.user.id, client);
 });
 
 app.action('task_view', async ({ body, ack, client }) => {
   await ack();
-  const { data: t } = await supabase
-    .from('tasks')
-    .select('*')
-    .eq('id', body.actions[0].value)
-    .single();
+  const { data: t } = await supabase.from('tasks').select('*').eq('id', body.actions[0].value).single();
 
   await client.views.open({
     trigger_id: body.trigger_id,
@@ -215,34 +241,24 @@ app.action('task_view', async ({ body, ack, client }) => {
         t.note && { type: 'section', text: { type: 'mrkdwn', text: t.note } },
         {
           type: 'context',
-          elements: [
-            {
-              type: 'mrkdwn',
-              text: `👤 <@${t.assigned_to}> | 📅 ${t.due_date || '—'} | #${t.project || '—'}`,
-            },
-          ],
+          elements: [{
+            type: 'mrkdwn',
+            text: `👤 <@${t.assigned_to}> | 📅 ${formatDate(t.due_date)} | #${t.project || '—'}`,
+          }],
         },
       ].filter(Boolean),
     },
   });
 });
 
-/* =====================================================
-   EDIT TASK
-===================================================== */
 app.action('task_edit', async ({ body, ack, client }) => {
   await ack();
-  const { data: t } = await supabase
-    .from('tasks')
-    .select('*')
-    .eq('id', body.actions[0].value)
-    .single();
+  const { data: t } = await supabase.from('tasks').select('*').eq('id', body.actions[0].value).single();
 
   if (t.created_by !== body.user.id) {
-    console.log('⛔ Edit blocked: not owner');
+    console.log('⛔ Edit blocked (not owner)');
     return;
   }
-
   await openTaskModal(client, body.trigger_id, 'edit_task', t);
 });
 
@@ -251,15 +267,23 @@ app.action('task_edit', async ({ body, ack, client }) => {
 ===================================================== */
 app.command('/todo', async ({ command, ack, client }) => {
   await ack();
-  console.log('/todo:', command.text);
+  const text = command.text.trim();
 
-  if (command.text.trim() === 'list') {
-    console.log('➡ Redirecting to Home tab');
+  if (text === 'list') {
     await publishHome(command.user_id, client);
     return;
   }
 
-  await openTaskModal(client, command.trigger_id, 'create_task');
+  if (text === '' || text === 'add') {
+    await openTaskModal(client, command.trigger_id, 'create_task');
+    return;
+  }
+
+  await client.chat.postEphemeral({
+    channel: command.channel_id,
+    user: command.user_id,
+    text: 'Usage: `/todo`, `/todo add`, `/todo list`',
+  });
 });
 
 /* =====================================================
@@ -276,13 +300,13 @@ async function openTaskModal(client, triggerId, callback, task = {}) {
       close: { type: 'plain_text', text: 'Cancel' },
       private_metadata: task.id || '',
       blocks: [
-        input('Task', 'title', task.title),
-        date('Due date', 'due_date', task.due_date),
-        user('Assignee', 'assigned_to', task.assigned_to),
-        channel('Project (optional)', 'project', task.project),
-        multi('Reminders', 'reminders', task.reminders),
-        multiUsers('Watchers', 'watchers', task.watchers),
-        textarea('Notes', 'note', task.note),
+        textInput('Task', 'title', task.title),
+        dateInput('Due date', 'due_date', task.due_date),
+        userInput('Assignee', 'assigned_to', task.assigned_to),
+        channelInput('Project (optional)', 'project', task.project),
+        reminderInput('Reminders', 'reminders', task.reminders),
+        watchersInput('Watchers', 'watchers', task.watchers),
+        textArea('Notes', 'note', task.note),
       ],
     },
   });
@@ -293,9 +317,8 @@ async function openTaskModal(client, triggerId, callback, task = {}) {
 ===================================================== */
 app.view('create_task', async ({ ack, body, view, client }) => {
   await ack();
-  console.log('➕ Create task');
-
   const v = view.state.values;
+
   await supabase.from('tasks').insert({
     title: v.title.value.value,
     due_date: v.due_date.value.selected_date,
@@ -309,22 +332,10 @@ app.view('create_task', async ({ ack, body, view, client }) => {
   });
 
   await publishHome(body.user.id, client);
-
-  await client.views.open({
-    trigger_id: body.trigger_id,
-    view: {
-      type: 'modal',
-      title: { type: 'plain_text', text: 'Success' },
-      close: { type: 'plain_text', text: 'Close' },
-      blocks: [{ type: 'section', text: { type: 'mrkdwn', text: '✅ Task created successfully' } }],
-    },
-  });
 });
 
 app.view('edit_task', async ({ ack, body, view, client }) => {
   await ack();
-  console.log('✏️ Update task');
-
   const id = view.private_metadata;
   const v = view.state.values;
 
@@ -342,43 +353,38 @@ app.view('edit_task', async ({ ack, body, view, client }) => {
 });
 
 /* =====================================================
-   BLOCK HELPERS
+   INPUT BUILDERS
 ===================================================== */
-const input = (label, id, val) => ({
+const textInput = (label, id, val) => ({
   type: 'input',
   block_id: id,
   label: { type: 'plain_text', text: label },
   element: { type: 'plain_text_input', action_id: 'value', initial_value: val || '' },
 });
 
-const textarea = (label, id, val) => ({
+const textArea = (label, id, val) => ({
   type: 'input',
   block_id: id,
   optional: true,
   label: { type: 'plain_text', text: label },
-  element: {
-    type: 'plain_text_input',
-    action_id: 'value',
-    multiline: true,
-    initial_value: val || '',
-  },
+  element: { type: 'plain_text_input', action_id: 'value', multiline: true, initial_value: val || '' },
 });
 
-const date = (label, id, val) => ({
+const dateInput = (label, id, val) => ({
   type: 'input',
   block_id: id,
   label: { type: 'plain_text', text: label },
   element: { type: 'datepicker', action_id: 'value', initial_date: val || undefined },
 });
 
-const user = (label, id, val) => ({
+const userInput = (label, id, val) => ({
   type: 'input',
   block_id: id,
   label: { type: 'plain_text', text: label },
   element: { type: 'users_select', action_id: 'value', initial_user: val },
 });
 
-const channel = (label, id, val) => ({
+const channelInput = (label, id, val) => ({
   type: 'input',
   block_id: id,
   optional: true,
@@ -386,7 +392,7 @@ const channel = (label, id, val) => ({
   element: { type: 'channels_select', action_id: 'value', initial_channel: val },
 });
 
-const multi = (label, id, vals) => ({
+const reminderInput = (label, id, vals) => ({
   type: 'input',
   block_id: id,
   optional: true,
@@ -395,22 +401,16 @@ const multi = (label, id, vals) => ({
     type: 'multi_static_select',
     action_id: 'value',
     options: REMINDER_OPTIONS,
-    initial_options: (vals || []).map(v =>
-      REMINDER_OPTIONS.find(o => o.value === v)
-    ),
+    initial_options: (vals || []).map(v => REMINDER_OPTIONS.find(o => o.value === v)),
   },
 });
 
-const multiUsers = (label, id, vals) => ({
+const watchersInput = (label, id, vals) => ({
   type: 'input',
   block_id: id,
   optional: true,
   label: { type: 'plain_text', text: label },
-  element: {
-    type: 'multi_users_select',
-    action_id: 'value',
-    initial_users: vals || [],
-  },
+  element: { type: 'multi_users_select', action_id: 'value', initial_users: vals || [] },
 });
 
 /* =====================================================
